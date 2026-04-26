@@ -1,0 +1,34 @@
+# Dependabot — mises à jour automatiques des dépendances
+# https://docs.github.com/en/code-security/dependabot
+
+version: 2
+updates:
+  # npm (extension)
+  - package-ecosystem: "npm"
+    directory: "/extension"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+
+  # pip (Python)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"

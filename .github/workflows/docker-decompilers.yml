@@ -1,0 +1,321 @@
+name: Docker — Build Decompilers
+
+# Rebuild uniquement les images dont les fichiers ont changé.
+# Règles de déclenchement par image :
+#   - docker/decompilers/<nom>/**  → rebuild cette image seulement
+#   - backends/static/ghidra_decompile.py → rebuild ghidra seulement
+#   - backends/static/retdec_decompile.py → rebuild retdec seulement
+#   - backends/static/angr_decompile.py   → rebuild angr seulement
+#   - backends/static/decompile.py        → rebuild toutes les images
+#   - docker/decompilers/<nom>/requirements.txt → rebuild cette image seulement
+
+on:
+  push:
+    branches: [main, develops]
+    paths:
+      - 'docker/decompilers/**'
+      - 'backends/static/decompile.py'
+      - 'backends/static/ghidra_decompile.py'
+      - 'backends/static/retdec_decompile.py'
+      - 'backends/static/angr_decompile.py'
+      - '.github/workflows/docker-decompilers.yml'
+  pull_request:
+    branches: [main, develops]
+    paths:
+      - 'docker/decompilers/**'
+      - 'backends/static/decompile.py'
+      - 'backends/static/ghidra_decompile.py'
+      - 'backends/static/retdec_decompile.py'
+      - 'backends/static/angr_decompile.py'
+      - '.github/workflows/docker-decompilers.yml'
+  workflow_dispatch:
+    inputs:
+      decompiler:
+        description: 'Décompilateur à builder (laisser vide = tous)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - ghidra
+          - retdec
+          - angr
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}/pile-ou-face
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Détecte quels décompilateurs doivent être rebuildés
+  # ──────────────────────────────────────────────
+  detect-changes:
+    name: Detect changed decompilers
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      any_changed: ${{ steps.set-matrix.outputs.any_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed decompilers
+        id: set-matrix
+        run: |
+          DECOMPILERS="ghidra retdec angr"
+          FORCED="${{ github.event.inputs.decompiler }}"
+
+          if [ -n "$FORCED" ]; then
+            TARGETS="$FORCED"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGETS="$DECOMPILERS"
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
+            echo "==> Fichiers modifiés :"
+            echo "$CHANGED"
+            TARGETS=""
+
+            for d in $DECOMPILERS; do
+              REBUILD=false
+
+              # Dockerfile ou fichier propre à ce décompilateur
+              if echo "$CHANGED" | grep -Eq "^docker/decompilers/${d}/"; then
+                REBUILD=true
+              fi
+
+              # Backend Python spécifique à ce décompilateur
+              if echo "$CHANGED" | grep -Eq "^backends/static/${d}_decompile\.py$"; then
+                REBUILD=true
+              fi
+
+              # decompile.py (orchestrateur commun) → rebuild tous
+              if echo "$CHANGED" | grep -Eq "^backends/static/decompile\.py$"; then
+                REBUILD=true
+              fi
+
+              # Le workflow lui-même a changé → rebuild tous
+              if echo "$CHANGED" | grep -Eq "^\.github/workflows/docker-decompilers\.yml$"; then
+                REBUILD=true
+              fi
+
+              if [ "$REBUILD" = "true" ]; then
+                TARGETS="$TARGETS $d"
+              fi
+            done
+            TARGETS=$(echo $TARGETS | xargs)  # trim
+          fi
+
+          if [ -z "$TARGETS" ]; then
+            echo "Aucune image à rebuilder"
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'any_changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo "==> Images à rebuilder : $TARGETS"
+            JSON='{"include":['
+            FIRST=1
+            for d in $TARGETS; do
+              if [ $FIRST -eq 0 ]; then JSON="$JSON,"; fi
+              JSON="$JSON{\"decompiler\":\"$d\"}"
+              FIRST=0
+            done
+            JSON="$JSON]}"
+            echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
+            echo 'any_changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  # ──────────────────────────────────────────────
+  # Build + push des images (un job par décompilateur)
+  # ──────────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.decompiler }}
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.any_changed == 'true' }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU (cross-build arm64)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/decompiler-${{ matrix.decompiler }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-,format=short
+
+      - name: Check Dockerfile exists
+        run: |
+          if [ ! -f "docker/decompilers/${{ matrix.decompiler }}/Dockerfile" ]; then
+            echo "❌ Dockerfile manquant pour ${{ matrix.decompiler }}"
+            exit 1
+          fi
+          echo "✅ Dockerfile : docker/decompilers/${{ matrix.decompiler }}/Dockerfile"
+
+      - name: Set build platforms
+        id: platforms
+        run: |
+          # retdec : binaire pré-compilé disponible uniquement en amd64
+          # Les autres : multiarch amd64 + arm64
+          if [ "${{ matrix.decompiler }}" = "retdec" ]; then
+            echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
+          else
+            echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push ${{ matrix.decompiler }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/decompilers/${{ matrix.decompiler }}/Dockerfile
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.decompiler }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.decompiler }}
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      - name: Image digest
+        run: echo "✅ ${{ matrix.decompiler }} → ${{ steps.meta.outputs.tags }}"
+
+  # ──────────────────────────────────────────────
+  # Smoke test dynamique — seulement les images rebuildées
+  # ──────────────────────────────────────────────
+  smoke-test:
+    name: Smoke ${{ matrix.decompiler }}/${{ matrix.platform_label }}
+    needs: [detect-changes, build]
+    if: ${{ needs.detect-changes.outputs.any_changed == 'true' }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform_label: [amd64, arm64]
+        decompiler: [ghidra, retdec, angr]
+        exclude:
+          # retdec est amd64-only — pas de binaire ARM64 disponible
+          - decompiler: retdec
+            platform_label: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if this decompiler was rebuilt
+        id: should_run
+        run: |
+          python3 -c "
+          import json, sys
+          payload = json.loads('${{ needs.detect-changes.outputs.matrix }}')
+          targets = {item['decompiler'] for item in payload.get('include', [])}
+          sys.exit(0 if '${{ matrix.decompiler }}' in targets else 1)
+          " && echo "run=true" >> "$GITHUB_OUTPUT" || echo "run=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        if: steps.should_run.outputs.run == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.should_run.outputs.run == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build local smoke image (PR only)
+        if: steps.should_run.outputs.run == 'true' && github.event_name == 'pull_request'
+        run: |
+          docker buildx build \
+            --platform "linux/${{ matrix.platform_label }}" \
+            --load \
+            --tag "pof-smoke-${{ matrix.decompiler }}:${{ matrix.platform_label }}" \
+            --file "docker/decompilers/${{ matrix.decompiler }}/Dockerfile" \
+            --cache-from "type=gha,scope=${{ matrix.decompiler }}" \
+            .
+
+      - name: Pull image (push builds only)
+        if: steps.should_run.outputs.run == 'true' && github.event_name != 'pull_request'
+        run: |
+          SHORT_SHA="$(git rev-parse --short=7 "$GITHUB_SHA")"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/decompiler-${{ matrix.decompiler }}:sha-${SHORT_SHA}"
+          docker pull "$IMAGE"
+          docker tag "$IMAGE" "pof-smoke-${{ matrix.decompiler }}:${{ matrix.platform_label }}"
+
+      - name: Smoke test
+        if: steps.should_run.outputs.run == 'true'
+        run: |
+          IMAGE="pof-smoke-${{ matrix.decompiler }}:${{ matrix.platform_label }}"
+          docker run --rm --network none --platform "linux/${{ matrix.platform_label }}" \
+            "$IMAGE" \
+            /opt/pof-venv/bin/python -m backends.static.decompile --list --provider local \
+            2>/dev/null | python3 -c "
+          import sys, json
+          lines = sys.stdin.read().splitlines()
+          for line in reversed(lines):
+              line = line.strip()
+              if not line: continue
+              try:
+                  d = json.loads(line)
+                  keys = [k for k in d if not k.startswith('_')][:6]
+                  print(f'✅ ${{ matrix.decompiler }}/${{ matrix.platform_label }} — backends: {keys}')
+                  sys.exit(0)
+              except Exception:
+                  continue
+          print('❌ Pas de JSON valide')
+          sys.exit(1)
+          "
+
+  # ──────────────────────────────────────────────
+  # Status global
+  # ──────────────────────────────────────────────
+  docker-build-success:
+    name: Docker Build Success
+    if: always()
+    needs: [detect-changes, build, smoke-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate results
+        run: |
+          BUILD="${{ needs.build.result }}"
+          SMOKE="${{ needs.smoke-test.result }}"
+          ANY="${{ needs.detect-changes.outputs.any_changed }}"
+          echo "any_changed : $ANY"
+          echo "build       : $BUILD"
+          echo "smoke       : $SMOKE"
+          if [[ "$ANY" == "false" ]]; then
+            echo "✅ Aucune image à rebuilder — skipped"
+            exit 0
+          fi
+          if [[ "$BUILD" == "failure" || "$BUILD" == "cancelled" ]]; then
+            echo "❌ Build Docker échoué" && exit 1
+          fi
+          if [[ "$SMOKE" == "failure" || "$SMOKE" == "cancelled" ]]; then
+            echo "❌ Smoke test échoué" && exit 1
+          fi
+          echo "✅ Images Docker OK (build=$BUILD, smoke=$SMOKE)"

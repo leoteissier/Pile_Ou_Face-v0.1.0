@@ -1,0 +1,272 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, develop, develops]
+
+permissions:
+  contents: read
+
+jobs:
+  # ══════════════════════════════════════════════════════════════
+  # 🎨 Lint & Type Check (toutes les branches)
+  # ══════════════════════════════════════════════════════════════
+  # lint:
+  #   name: Lint & Type Check
+  #   runs-on: ubuntu-latest
+
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+
+  #     - name: Setup Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.11'
+  #         cache: 'pip'
+
+  #     - name: Install dev dependencies
+  #       run: pip install -r backends/requirements-ci.txt -r backends/requirements-dev.txt
+
+  #     - name: black (format check)
+  #       working-directory: ./backends
+  #       run: python -m black --check static/ --config pyproject.toml
+
+  #     - name: flake8 (lint)
+  #       working-directory: ./backends
+  #       run: python -m flake8 static/ --config .flake8
+
+  #     - name: mypy (type check)
+  #       working-directory: ./backends
+  #       run: python -m mypy static/ --config-file pyproject.toml
+
+  # ══════════════════════════════════════════════════════════════
+  # 🔍 Tests Rapides (Feature Branches)
+  # ══════════════════════════════════════════════════════════════
+  quick-test:
+    name: Quick Test
+    if: |
+      github.event_name == 'push' &&
+      github.ref != 'refs/heads/main' &&
+      github.ref != 'refs/heads/develop'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backends/requirements-ci.txt
+          cd extension && npm ci
+
+      - name: Security audit
+        working-directory: ./extension
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Run tests
+        run: |
+          python3 backends/static/tests/run_tests.py
+          cd extension && npm test
+
+  # ══════════════════════════════════════════════════════════════
+  # 🧪 Tests Complets Multi-OS (Main / Develop / PRs)
+  # ══════════════════════════════════════════════════════════════
+  full-test:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
+        node: [18.x, 20.x]
+        exclude:
+          - os: macos-latest
+            node: 18.x
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make -y
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          xcode-select --install 2>/dev/null || true
+          brew install make 2>/dev/null || true
+
+      - name: Install Python dependencies
+        run: pip install -r backends/requirements-ci.txt
+
+      - name: Install Node dependencies
+        working-directory: ./extension
+        run: npm ci
+
+      - name: NPM security audit
+        working-directory: ./extension
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Check for known vulnerabilities (Python)
+        run: |
+          pip install safety
+          safety check --json || true
+        continue-on-error: true
+
+      - name: Verify package integrity
+        working-directory: ./extension
+        run: npm ls --depth=0
+        continue-on-error: true
+
+      - name: Run Python tests
+        run: python3 backends/static/tests/run_tests.py
+
+      - name: Run JavaScript tests
+        working-directory: ./extension
+        run: npm test
+
+      - name: Show environment info
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "=== Compiler Info ==="
+          cc --version 2>/dev/null || gcc --version 2>/dev/null || echo "No compiler found"
+          echo "=== Python Info ===" && python3 --version
+          echo "=== Node Info ===" && node --version && npm --version
+
+      - name: Show environment info (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "=== Python Info ===" ; python --version
+          Write-Host "=== Node Info ===" ; node --version ; npm --version
+
+  # ══════════════════════════════════════════════════════════════
+  # 🔐 Security Scan (PRs uniquement)
+  # ══════════════════════════════════════════════════════════════
+  security-scan:
+    name: Security Scan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./extension
+        run: npm ci
+
+      - name: Run npm audit (strict)
+        working-directory: ./extension
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Check for outdated packages
+        working-directory: ./extension
+        run: npm outdated || true
+        continue-on-error: true
+
+      - name: Scan Python dependencies
+        run: |
+          pip install safety pip-audit
+          pip-audit --desc || true
+          safety check || true
+        continue-on-error: true
+
+  # ══════════════════════════════════════════════════════════════
+  # ✅ Status Check (Required for PRs)
+  # ══════════════════════════════════════════════════════════════
+  ci-success:
+    name: CI Success
+    if: always()
+    # needs: [lint, quick-test, full-test, security-scan]
+    needs: [quick-test, full-test, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        shell: bash
+        run: |
+          QUICK="${{ needs.quick-test.result }}"
+          FULL="${{ needs.full-test.result }}"
+          SECURITY="${{ needs.security-scan.result }}"
+
+          echo "Event      : ${{ github.event_name }}"
+          echo "Quick test : $QUICK"
+          echo "Full test  : $FULL"
+          echo "Security   : $SECURITY"
+
+          is_ok_or_skipped() {
+            [[ "$1" == "success" || "$1" == "skipped" ]]
+          }
+
+          # Sur un push → quick-test peut être ignoré sur certaines branches
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            if [[ "$QUICK" == "failure" || "$QUICK" == "cancelled" ]]; then
+              echo "❌ Quick test failed" && exit 1
+            fi
+            if is_ok_or_skipped "$QUICK"; then
+              echo "✅ Push checks passed" && exit 0
+            fi
+          fi
+
+          # Sur une PR → full-test + security doivent réussir, ou être explicitement ignorés
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ "$FULL" == "failure" || "$FULL" == "cancelled" ]]; then
+              echo "❌ Full test failed" && exit 1
+            fi
+            if [[ "$SECURITY" == "failure" || "$SECURITY" == "cancelled" ]]; then
+              echo "❌ Security scan failed" && exit 1
+            fi
+            if is_ok_or_skipped "$FULL" && is_ok_or_skipped "$SECURITY"; then
+              echo "✅ Full test + Security passed" && exit 0
+            fi
+          fi
+
+          echo "❌ No tests ran successfully" && exit 1

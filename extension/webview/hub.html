@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<!-- Reverse Workspace — Hub principal -->
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; img-src {{cspSource}}; script-src {{cspSource}}; style-src {{cspSource}} 'unsafe-inline';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reverse Workspace</title>
+  <link rel="stylesheet" href="{{baseCssUri}}">
+  <link rel="stylesheet" href="{{dashboardCssUri}}">
+  <link rel="stylesheet" href="{{staticCssUri}}">
+  <link rel="stylesheet" href="{{dynamicCssUri}}">
+  <link rel="stylesheet" href="{{outilsCssUri}}">
+  <link rel="stylesheet" href="{{optionsCssUri}}">
+</head>
+<body>
+  <div class="hub">
+
+    <!-- Top bar -->
+    <header class="top-bar">
+      <div class="top-bar-brand">
+        <span class="top-bar-brand-icon">⚡</span>
+        <span>Reverse</span>
+      </div>
+      <div class="top-bar-binary">
+        <button id="topBarBinaryButton" type="button" class="top-bar-binary-button" title="Choisir ou changer le binaire actif">
+          <span id="topBarBinaryName" class="top-bar-binary-name empty">Choisir un fichier…</span>
+          <span id="topBarChipFormat" class="top-bar-chip" style="display:none"></span>
+          <span id="topBarChipArch" class="top-bar-chip" style="display:none"></span>
+          <span class="top-bar-binary-caret" aria-hidden="true">▾</span>
+        </button>
+        <div id="topBarBinaryMenu" class="top-bar-binary-menu" hidden>
+          <div class="top-bar-binary-menu-section">
+            <div class="top-bar-binary-menu-title">Binaire actif</div>
+            <button id="btnTopBarSelectBinary" type="button" class="top-bar-menu-item top-bar-menu-item-primary">
+              Choisir un fichier ou un blob…
+            </button>
+          </div>
+          <div class="top-bar-binary-menu-section">
+            <div class="top-bar-binary-menu-row">
+              <div class="top-bar-binary-menu-title">Récents</div>
+              <button id="btnClearRecentBinaries" type="button" class="top-bar-menu-link">Effacer</button>
+            </div>
+            <div id="topBarRecentList" class="top-bar-recent-list"></div>
+          </div>
+        </div>
+      </div>
+      <div class="top-bar-spacer"></div>
+      <span id="topBarMode" class="top-bar-mode other">—</span>
+    </header>
+
+    <!-- Icon nav (44px) -->
+    <nav class="icon-nav">
+      <button class="icon-nav-item active" data-panel="dashboard" data-tooltip="Dashboard">📋</button>
+      <button class="icon-nav-item" data-panel="static" data-tooltip="Analyse statique">📄</button>
+      <button class="icon-nav-item" data-panel="dynamic" data-tooltip="Trace dynamique">▶</button>
+      <div class="icon-nav-spacer"></div>
+      <button class="icon-nav-item" data-panel="outils" data-tooltip="Outils">🔧</button>
+      <button class="icon-nav-item" data-panel="options" data-tooltip="Options">⚙</button>
+    </nav>
+
+    <!-- Content area -->
+    <main class="content">
+
+      {{panelDashboard}}
+
+      {{panelStatic}}
+
+      {{panelDynamic}}
+
+      {{panelOutils}}
+
+      {{panelOptions}}
+
+
+    </main>
+  </div>
+
+  <!-- Exploit notes FAB + widget -->
+  <button id="exploitNotesFab" type="button" class="exploit-notes-fab" title="Ouvrir Notes exploit">Notes</button>
+  <section id="exploitNotesWidget" class="exploit-notes-widget" aria-label="Notes exploit flottantes">
+    <header id="exploitNotesWidgetHeader" class="exploit-notes-widget-header">
+      <strong>Notes exploit</strong>
+      <div class="exploit-notes-widget-actions">
+        <button id="exploitNotesWidgetCollapse" type="button" class="btn btn-sm" title="Réduire">−</button>
+        <button id="exploitNotesWidgetClose" type="button" class="btn btn-sm" title="Fermer">✕</button>
+      </div>
+    </header>
+    <div class="exploit-notes-widget-body">
+      <textarea
+        id="exploitNotes"
+        class="input-inner"
+        rows="7"
+        spellcheck="false"
+        placeholder="Ex: cmp=0x4011c7&#10;padding=76&#10;suffix=DCBA&#10;buffer_offset=-0x70&#10;target=win"
+      ></textarea>
+      <div class="exploit-notes-widget-footer">
+        <button id="btnAutoFromNotesWidget" type="button" class="btn btn-primary btn-sm">Auto depuis Notes</button>
+      </div>
+    </div>
+  </section>
+
+  <button id="ollamaChatFab" type="button" class="ollama-chat-fab" title="Parler à l'IA">IA</button>
+  <section id="ollamaChatWidget" class="ollama-chat-widget" aria-label="Assistant IA flottant">
+    <header class="ollama-chat-widget-header">
+      <strong>Assistant IA</strong>
+      <div class="ollama-chat-widget-actions">
+        <button id="btnOllamaOpenDashboard" type="button" class="btn btn-sm">Dashboard</button>
+        <button id="btnOllamaChatWidgetClose" type="button" class="btn btn-sm" title="Fermer">✕</button>
+      </div>
+    </header>
+    <div class="ollama-chat-widget-body">
+      <div class="ollama-chat-widget-model-row">
+        <select id="ollamaQuickModelSelect" class="select-modern" data-ollama-model-select="true"></select>
+        <button id="btnOllamaQuickRefresh" type="button" class="btn btn-secondary btn-sm">Rafraîchir</button>
+      </div>
+      <p class="hint" data-ollama-status="true">Assistant prêt.</p>
+      <div class="ollama-chat-history ollama-chat-history-compact" data-ollama-chat-history="true" aria-live="polite"></div>
+      <textarea
+        id="ollamaQuickPromptInput"
+        class="input-inner ollama-chat-input ollama-chat-input-compact"
+        rows="3"
+        spellcheck="false"
+        placeholder="Pose ta question sans quitter l'outil courant…"
+      ></textarea>
+      <div class="form-actions">
+        <button id="btnOllamaQuickSend" type="button" class="btn btn-primary btn-sm">Envoyer</button>
+        <button id="btnOllamaQuickNewChat" type="button" class="btn btn-secondary btn-sm">Nouveau fil</button>
+      </div>
+    </div>
+  </section>
+
+  <script src="{{elkUri}}"></script>
+  <script src="{{cfgHelpersUri}}"></script>
+  <script src="{{scriptUri}}"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+# Dépendances Python pour le container angr
+# angr tire unicorn, capstone, keystone, claripy, archinfo, cle, pyvex comme dépendances
+lief
+capstone
+angr

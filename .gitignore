@@ -1,0 +1,39 @@
+__pycache__/
+.venv/
+backends/.venv/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# VS Code and editors
+# .vscode/
+out/
+.vscode-test/
+*.vsix
+.DS_Store
+*.log
+*.swp
+*.swo
+*~
+.env
+.idea/
+.pfdb/
+*.pfdb
+
+# Build artifacts
+build/
+dist/
+
+*.asm
+*.elf
+backends/capa-rules/
+*.dSYM
+output.json
+.pile-ou-face/
+
+.claude
+examples/*

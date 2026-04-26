@@ -1,0 +1,79 @@
+<section id="panel-dynamic" class="panel">
+  <div class="panel-hero">
+    <div class="panel-hero-icon">▶</div>
+    <h1 class="panel-hero-title">Dynamic — Run Trace</h1>
+    <p class="panel-hero-desc">Le binaire et les paramètres TRACE sont préremplis directement ici, dans le hub.</p>
+  </div>
+  <form id="traceForm" class="form">
+    <div class="form-section modern-card">
+      <div class="dynamic-header-row">
+        <div>
+          <h3>BINARY</h3>
+          <p class="hint">Le binaire sélectionné côté projet est repris automatiquement. Tu peux quand même le changer ici.</p>
+        </div>
+        <button id="btnDynamicSelectBinary" type="button" class="btn btn-secondary btn-sm">Changer le binaire</button>
+      </div>
+      <div class="form-field">
+        <label>Chemin binaire</label>
+        <div class="input-wrap"><input name="binaryPath" id="dynamicBinaryPath" type="text" value="" class="input-inner" spellcheck="false" /></div>
+      </div>
+      <div class="form-row dynamic-meta-row">
+        <div class="form-field">
+          <label>Architecture</label>
+          <div class="dynamic-meta-value" id="dynamicArchBits">—</div>
+        </div>
+        <div class="form-field">
+          <label>PIE</label>
+          <div class="dynamic-meta-value" id="dynamicPie">—</div>
+        </div>
+      </div>
+      <div class="form-field dynamic-source-field">
+        <label>Code source C optionnel</label>
+        <div class="dynamic-source-row">
+          <div class="input-wrap">
+            <input name="sourcePath" id="dynamicSourcePath" type="text" value="" class="input-inner" spellcheck="false" placeholder="examples/test3.c" />
+          </div>
+          <button id="btnDynamicSelectSource" type="button" class="btn btn-secondary btn-sm">Ajouter un fichier C</button>
+        </div>
+        <p class="hint" id="dynamicSourceHint">Pour une meilleure analyse, ajoutez le code source C du programme.</p>
+      </div>
+    </div>
+
+    <div class="form-section modern-card">
+      <div class="dynamic-header-row">
+        <div>
+          <h3>ARGV[1]</h3>
+          <p class="hint">Saisis directement l’argument que tu veux passer au programme, par exemple `AAA` ou `A*64+CCCC`.</p>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-field">
+          <label>argv[1]</label>
+          <div class="input-wrap"><input name="argvPayload" id="argvPayload" type="text" value="" placeholder="AAA ou A*64+CCCC" class="input-inner" spellcheck="false" /></div>
+          <p id="argvPayloadHint" class="hint">Injecté comme argument de ligne de commande. Pratique pour tester rapidement un overflow.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section modern-card">
+      <div class="dynamic-header-row">
+        <div>
+          <h3>Historique</h3>
+          <p class="hint">Rouvre un run précédent ou supprime les traces temporaires dont tu n’as plus besoin.</p>
+        </div>
+        <div class="dynamic-history-toolbar">
+          <button id="btnRefreshDynamicTraceHistory" type="button" class="btn btn-secondary btn-sm">Actualiser</button>
+          <button id="btnClearDynamicTraceHistory" type="button" class="btn btn-secondary btn-sm">Nettoyer</button>
+        </div>
+      </div>
+      <div id="dynamicTraceHistory" class="dynamic-history-list">
+        <p class="hint">Aucune trace temporaire pour le moment.</p>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <span id="dynamicTraceStatus" class="hint">Prêt.</span>
+      <button id="runBtn" type="submit" class="btn btn-primary">Run Trace</button>
+    </div>
+  </form>
+</section>

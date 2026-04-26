@@ -1,0 +1,82 @@
+      <!-- Dashboard -->
+      <section id="panel-dashboard" class="panel active">
+        <div class="static-panel active">
+          <div class="dashboard-hero">
+            <div class="dashboard-hero-icon">⚡</div>
+            <h1 class="dashboard-hero-title">Reverse Workspace</h1>
+            <p class="dashboard-hero-desc">Analyse statique &amp; dynamique du binaire courant</p>
+          </div>
+          <div class="quick-actions">
+            <button class="action-card" data-action="static-open">
+              <span class="action-icon">📄</span>
+              <span class="action-label">Analyse statique</span>
+              <span class="action-hint">Désassemblage, symboles, CFG, xrefs</span>
+            </button>
+            <button class="action-card" data-action="dynamic-run">
+              <span class="action-icon">▶</span>
+              <span class="action-label">Lancer trace (Dynamic)</span>
+              <span class="action-hint">Unicorn + injection</span>
+            </button>
+            <button class="action-card" data-action="outils-open">
+              <span class="action-icon">🔧</span>
+              <span class="action-label">Outils</span>
+              <span class="action-hint">Calculette, payload, fichiers</span>
+            </button>
+          </div>
+
+          <section class="dashboard-ollama modern-card">
+            <div class="dashboard-ollama-head">
+              <div>
+                <p class="dashboard-kicker">IA locale</p>
+                <h3>Discussion Ollama + MCP</h3>
+              </div>
+              <p class="dashboard-ollama-desc">Discute en continu avec l'assistant sur les résultats des outils MCP.</p>
+            </div>
+
+            <div class="dashboard-ollama-controls">
+              <div class="form-field">
+                <label for="ollamaBaseUrl">URL Ollama</label>
+                <div class="input-wrap">
+                  <input id="ollamaBaseUrl" type="text" class="input-inner settings-mono" value="http://127.0.0.1:11434" spellcheck="false" />
+                </div>
+              </div>
+              <div class="form-field">
+                <label for="ollamaModelSelect">Modèle</label>
+                <div class="dashboard-ollama-model-row">
+                  <select id="ollamaModelSelect" class="select-modern" data-ollama-model-select="true"></select>
+                  <button id="btnOllamaRefreshModels" type="button" class="btn btn-secondary btn-sm">Rafraîchir</button>
+                </div>
+              </div>
+            </div>
+
+            <p id="ollamaPromptStatus" class="hint" data-ollama-status="true">Clique sur “Rafraîchir” pour charger les modèles disponibles.</p>
+
+            <div id="ollamaChatHistory" class="ollama-chat-history" data-ollama-chat-history="true" aria-live="polite"></div>
+
+            <div class="form-field">
+              <label for="ollamaPromptInput">Message</label>
+              <textarea
+                id="ollamaPromptInput"
+                class="input-inner ollama-chat-input"
+                rows="4"
+                spellcheck="false"
+                placeholder="Ex: Analyse via l'outil disassemble le code de demo_analysis.elf"
+              ></textarea>
+            </div>
+
+            <div class="form-actions">
+              <button id="btnOllamaRunPrompt" type="button" class="btn btn-primary">Envoyer</button>
+              <button id="btnOllamaNewChat" type="button" class="btn btn-secondary">Nouvelle discussion</button>
+            </div>
+
+            <section class="ollama-history-panel">
+              <div class="ollama-history-head">
+                <h4>Historique des conversations</h4>
+                <button id="btnOllamaClearHistory" type="button" class="btn btn-secondary btn-sm">Vider</button>
+              </div>
+              <div id="ollamaConversationHistoryList" class="ollama-history-list"></div>
+            </section>
+          </section>
+
+        </div>
+      </section>

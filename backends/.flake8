@@ -1,0 +1,14 @@
+[flake8]
+max-line-length = 88
+extend-ignore =
+    # Whitespace before ':' — conflicts with black slice formatting
+    E203,
+    # Line break before binary operator — conflicts with black
+    W503,
+    # Line too long — handled by black (88 chars)
+    E501,
+    # Module level import not at top — unavoidable in test files (sys.path setup)
+    E402
+per-file-ignores =
+    # Test files: sys.path manipulation before imports is intentional
+    backends/static/tests/*.py: E402
