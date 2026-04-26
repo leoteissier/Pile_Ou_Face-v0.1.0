@@ -241,7 +241,7 @@
     "test:coverage": "nyc mocha 'test/**/*.test.js' --require test/setup.js"
   },
   "devDependencies": {
-    "@eslint/js": "^9.0.0",
+    "@eslint/js": "^10.0.1",
     "chai": "^4.3.10",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
