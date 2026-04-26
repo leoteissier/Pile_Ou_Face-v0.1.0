@@ -2,4 +2,4 @@
 black>=26.0
 flake8>=7.0
 mypy>=1.0
-pre-commit>=4.0
+pre-commit>=4.6.0
