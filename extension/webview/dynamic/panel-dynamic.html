@@ -1,4 +1,4 @@
-<section id="panel-dynamic" class="panel">
+  <section id="panel-dynamic" class="panel">
   <div class="panel-hero">
     <div class="panel-hero-icon">▶</div>
     <h1 class="panel-hero-title">Dynamic — Run Trace</h1>
@@ -42,15 +42,24 @@
     <div class="form-section modern-card">
       <div class="dynamic-header-row">
         <div>
-          <h3>ARGV[1]</h3>
-          <p class="hint">Saisis directement l’argument que tu veux passer au programme, par exemple `AAA` ou `A*64+CCCC`.</p>
+          <h3>Payload d'entree</h3>
+          <p class="hint">Saisis le payload a injecter, par exemple `AAA` ou `A*64+CCCC`, puis choisis la cible `argv[1]`, `stdin` ou les deux. Les suites `\xNN` sont injectees octet par octet: pour viser `0xdeadbeef` en little-endian, utilise `\xEF\xBE\xAD\xDE`.</p>
         </div>
       </div>
       <div class="form-row">
-        <div class="form-field">
-          <label>argv[1]</label>
+        <div class="form-field dynamic-payload-input-field">
+          <label>Payload</label>
           <div class="input-wrap"><input name="argvPayload" id="argvPayload" type="text" value="" placeholder="AAA ou A*64+CCCC" class="input-inner" spellcheck="false" /></div>
-          <p id="argvPayloadHint" class="hint">Injecté comme argument de ligne de commande. Pratique pour tester rapidement un overflow.</p>
+          <p id="argvPayloadHint" class="hint">Injecté automatiquement selon le code source quand il est disponible.</p>
+        </div>
+        <div class="form-field dynamic-payload-target-field">
+          <label>Cible</label>
+          <select name="dynamicPayloadTargetMode" id="dynamicPayloadTargetMode" class="select-modern">
+            <option value="auto" selected>Auto</option>
+            <option value="argv1">argv[1]</option>
+            <option value="stdin">stdin</option>
+            <option value="both">stdin + argv[1]</option>
+          </select>
         </div>
       </div>
     </div>

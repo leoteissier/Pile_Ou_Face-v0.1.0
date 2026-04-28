@@ -140,6 +140,114 @@ class TestDynamicStackModel(unittest.TestCase):
         self.assertIn("return_address", step["overflow"]["reached"])
         self.assertTrue(any("Overflow:" in bullet for bullet in step["explanationBullets"]))
 
+    def test_leave_keeps_frame_control_addresses_on_last_valid_bp(self):
+        word = 4
+        ebp = 0x1000
+        esp = 0x0FC0
+        window_start = 0x0FA0
+        window = bytearray(b"\x00" * 0x80)
+        buffer_start = ebp - 0x40
+        write_offset = buffer_start - window_start
+        window[write_offset : write_offset + 64] = b"A" * 64
+        saved_bp_offset = ebp - window_start
+        window[saved_bp_offset : saved_bp_offset + 4] = b"BBBB"
+        ret_offset = (ebp + 4) - window_start
+        window[ret_offset : ret_offset + 4] = b"CCCC"
+        arg_offset = (ebp + 8) - window_start
+        window[arg_offset : arg_offset + 4] = b"\x96\x91\x04\x08"
+
+        step1 = {
+            "step": 1,
+            "func": "main",
+            "instr": "mov eax, 0",
+            "instruction": {
+                "address": "0x401000",
+                "size": 3,
+                "bytes": "b8 00 00",
+                "mnemonic": "mov",
+                "operands": "eax, 0",
+                "text": "mov eax, 0",
+            },
+            "cpu": {
+                "arch": "x86",
+                "word_size": word,
+                "endian": "little",
+                "aliases": {"sp": "esp", "bp": "ebp", "fp": "ebp", "ip": "eip", "lr": None},
+                "before": {"registers": {"esp": hex(esp), "ebp": hex(ebp), "eip": "0x401000"}},
+                "after": {"registers": {"esp": hex(esp), "ebp": hex(ebp), "eip": "0x401003"}},
+            },
+            "memory": {
+                "window_start": hex(window_start),
+                "window_bytes": _hex_bytes(window),
+                "writes": [],
+                "reads": [],
+            },
+            "effects": {"kind": "write"},
+            "registers": [],
+            "stack": [],
+        }
+
+        step2 = {
+            "step": 2,
+            "func": "main",
+            "instr": "leave",
+            "instruction": {
+                "address": "0x401003",
+                "size": 1,
+                "bytes": "c9",
+                "mnemonic": "leave",
+                "operands": "",
+                "text": "leave",
+            },
+            "cpu": {
+                "arch": "x86",
+                "word_size": word,
+                "endian": "little",
+                "aliases": {"sp": "esp", "bp": "ebp", "fp": "ebp", "ip": "eip", "lr": None},
+                "before": {"registers": {"esp": hex(esp), "ebp": hex(ebp), "eip": "0x401003"}},
+                "after": {
+                    "registers": {
+                        "esp": hex(ebp + 4),
+                        "ebp": "0x42424242",
+                        "eip": "0x401004",
+                    }
+                },
+            },
+            "memory": {
+                "window_start": hex(window_start),
+                "window_bytes": _hex_bytes(window),
+                "writes": [],
+                "reads": [],
+            },
+            "effects": {"kind": "write"},
+            "registers": [],
+            "stack": [],
+        }
+
+        meta = {
+            "arch_bits": 32,
+            "word_size": word,
+            "stack_base": hex(0x0F00),
+            "stack_size": 0x400,
+            "buffer_offset": -0x40,
+            "buffer_size": 64,
+            "binary": str(__file__),
+        }
+        disasm = [
+            {"addr": "0x401000", "text": "mov eax, 0"},
+            {"addr": "0x401003", "text": "leave"},
+            {"addr": "0x401004", "text": "ret"},
+        ]
+
+        analysis = build_dynamic_analysis([step1, step2], meta, str(__file__), disasm)
+        leave_step = analysis["2"]
+
+        self.assertEqual(leave_step["frame"]["basePointer"], hex(ebp))
+        self.assertEqual(leave_step["frame"]["registerBasePointer"], "0x42424242")
+        self.assertEqual(leave_step["control"]["savedBpAddr"], hex(ebp))
+        self.assertEqual(leave_step["control"]["retAddrAddr"], hex(ebp + word))
+        self.assertEqual(leave_step["control"]["retValue"], "0x43434343")
+
 
 if __name__ == "__main__":
     unittest.main()

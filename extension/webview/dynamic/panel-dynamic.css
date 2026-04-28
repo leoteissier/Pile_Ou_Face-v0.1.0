@@ -97,6 +97,21 @@
   gap: 4px;
 }
 
+#panel-dynamic .dynamic-payload-input-field {
+  flex: 1 1 360px;
+  min-width: 0;
+}
+
+#panel-dynamic .dynamic-payload-target-field {
+  flex: 0 0 180px;
+  min-width: 160px;
+}
+
+#panel-dynamic .dynamic-payload-target-field .select-modern {
+  width: 100%;
+  min-height: 30px;
+}
+
 #panel-dynamic .form-actions {
   display: flex;
   align-items: center;

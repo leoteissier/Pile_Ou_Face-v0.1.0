@@ -786,7 +786,7 @@ function updateUI(options = {}) {
     selectedSlotKey: state.selectedStackSlotKey,
     memoryMap: state.memoryMap,
     debugMemory: state.debugMemory,
-    payloadText: state.meta?.argv1 || '',
+    payloadText: state.meta?.payload_text || state.meta?.argv1 || '',
     onSelectFunction: (functionName) => {
       setSelectedFunction(functionName);
     },

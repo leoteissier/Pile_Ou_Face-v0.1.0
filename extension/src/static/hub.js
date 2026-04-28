@@ -24,6 +24,12 @@ const {
   preferredMainSymbol,
   symbolLookupCandidates,
 } = require('../shared/symbols');
+const {
+  detectPayloadTargetFromSourceText,
+  normalizePayloadTargetMode,
+  payloadTargetLabel,
+  resolvePayloadTarget,
+} = require('../shared/dynamicInputTarget');
 const { readCache, writeCache } = require('../shared/staticCache');
 const { createHandlers } = require('./handlers');
 const {
@@ -236,6 +242,28 @@ function createHub(config) {
       const relPath = path.relative(root, absolutePath);
       return relPath.startsWith('..') ? absolutePath : relPath;
     };
+    const readSourceTextForPayloadTarget = (sourcePath = '') => {
+      const requestedSourcePath = String(sourcePath || '').trim();
+      if (!requestedSourcePath) return '';
+      const absoluteSourcePath = resolvePathFromWorkspace(requestedSourcePath);
+      if (!fs.existsSync(absoluteSourcePath)) return '';
+      try {
+        return fs.readFileSync(absoluteSourcePath, 'utf8');
+      } catch (_) {
+        return '';
+      }
+    };
+    const buildPayloadTargetPreview = ({ sourcePath = '', mode = 'auto' } = {}) => {
+      const sourceText = readSourceTextForPayloadTarget(sourcePath);
+      const auto = detectPayloadTargetFromSourceText(sourceText);
+      const resolved = resolvePayloadTarget({ mode, sourceText });
+      return {
+        payloadTargetMode: normalizePayloadTargetMode(mode),
+        payloadTargetAuto: auto.target,
+        payloadTargetEffective: resolved.target,
+        payloadTargetReason: resolved.reason
+      };
+    };
     const buildSourceEnrichmentMeta = ({ sourcePath = '', trace = null, archBits = 64 } = {}) => {
       const requestedSourcePath = String(sourcePath || '').trim();
       if (!requestedSourcePath) return null;
@@ -344,7 +372,8 @@ function createHub(config) {
         }
         const snapshots = Array.isArray(trace?.snapshots) ? trace.snapshots : [];
         const meta = trace?.meta && typeof trace.meta === 'object' ? trace.meta : {};
-        const argv1 = String(meta.argv1 || '');
+        const payloadText = String(meta.payload_text || meta.argv1 || '');
+        const payloadLabel = String(meta.payload_label || payloadTargetLabel(meta.payload_target || 'argv1'));
         const runId = Number(meta.trace_run_id || deriveTraceRunIdFromPath(name) || 0);
         const updatedAtMs = Number(stat?.mtimeMs || 0);
         const binaryPath = String(meta.binary || '').trim();
@@ -355,8 +384,9 @@ function createHub(config) {
           fileName: name,
           runId,
           steps: snapshots.length,
-          argvBytes: argv1.length,
-          argvPreview: argv1.length > previewLimit ? `${argv1.slice(0, previewLimit)}...` : argv1,
+          argvBytes: payloadText.length,
+          argvPreview: payloadText.length > previewLimit ? `${payloadText.slice(0, previewLimit)}...` : payloadText,
+          payloadLabel,
           binaryName: binaryPath ? path.basename(binaryPath) : '',
           sourceName: sourcePath ? path.basename(sourcePath) : '',
           startSymbol: String(meta.start_symbol || '').trim(),
@@ -1188,7 +1218,8 @@ function createHub(config) {
         ])
       );
 
-      const buildRunTraceInit = async (forcedBinaryPath = '', preset = null) => {
+      const buildRunTraceInit = async (forcedBinaryPath = '', preset = null, forcedSourcePath = '', payloadTargetMode = 'auto') => {
+        const requestedPayloadTargetMode = normalizePayloadTargetMode(preset?.payloadTargetMode || payloadTargetMode);
         const latestTrace = loadLatestTrace();
         const traceBinary = String(latestTrace?.meta?.binary || '').trim();
         const fallbackBinary = getExampleCandidates(root, 'stack3').find((candidate) => fs.existsSync(candidate)) || '';
@@ -1204,6 +1235,14 @@ function createHub(config) {
             sourceEnrichmentEnabled: false,
             sourceEnrichmentStatus: '',
             sourceEnrichmentMessage: '',
+            payloadTargetMode: requestedPayloadTargetMode,
+            payloadTargetAuto: 'argv1',
+            payloadTargetEffective: requestedPayloadTargetMode === 'auto'
+              ? 'argv1'
+              : requestedPayloadTargetMode,
+            payloadTargetReason: requestedPayloadTargetMode === 'auto'
+              ? 'Auto: aucune source claire, fallback sur argv[1]'
+              : `${payloadTargetLabel(requestedPayloadTargetMode)} force manuellement`,
             archBits: 64,
             pie: false,
             symbols: { startDefault: defaultMain, stopDefault: '' },
@@ -1256,12 +1295,25 @@ function createHub(config) {
           ...(typeof preset?.payloadExpr === 'string' ? { argvPayload: preset.payloadExpr } : {})
         };
 
+        const selectedSourcePath = String(
+          forcedSourcePath
+          || preset?.sourcePath
+          || sameBinaryTrace?.meta?.source
+          || sameBinaryTrace?.meta?.source_enrichment?.sourcePath
+          || ''
+        ).trim();
+        const payloadTargetPreview = buildPayloadTargetPreview({
+          sourcePath: selectedSourcePath,
+          mode: requestedPayloadTargetMode
+        });
+
         return {
           binaryPath: toWebviewPath(absoluteBinaryPath),
-          sourcePath: String(sameBinaryTrace?.meta?.source || '').trim(),
+          sourcePath: selectedSourcePath,
           sourceEnrichmentEnabled: sameBinaryTrace?.meta?.source_enrichment?.enabled === true,
           sourceEnrichmentStatus: String(sameBinaryTrace?.meta?.source_enrichment?.status || '').trim(),
           sourceEnrichmentMessage: String(sameBinaryTrace?.meta?.source_enrichment?.message || '').trim(),
+          ...payloadTargetPreview,
           archBits,
           pie: inferPie(info, sameBinaryTrace),
           symbols: { startDefault, stopDefault },
@@ -2544,7 +2596,12 @@ function createHub(config) {
       }
 
       if (message.type === 'requestRunTraceInit') {
-        const initPayload = await buildRunTraceInit(message.binaryPath || '', message.preset || null);
+        const initPayload = await buildRunTraceInit(
+          message.binaryPath || '',
+          message.preset || null,
+          message.sourcePath || '',
+          message.payloadTargetMode || 'auto'
+        );
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         return;
       }
@@ -2596,7 +2653,12 @@ function createHub(config) {
       }
 
       if (message.type === 'refreshRunTraceBinary') {
-        const initPayload = await buildRunTraceInit(message.binaryPath || '');
+        const initPayload = await buildRunTraceInit(
+          message.binaryPath || '',
+          null,
+          message.sourcePath || '',
+          message.payloadTargetMode || 'auto'
+        );
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         return;
       }
@@ -2612,7 +2674,7 @@ function createHub(config) {
         const binaryPath = binaryUri[0].fsPath;
         const pathForWebview = toWebviewPath(binaryPath);
         panel.webview.postMessage({ type: 'hubSetBinaryPath', binaryPath: pathForWebview });
-        const initPayload = await buildRunTraceInit(pathForWebview);
+        const initPayload = await buildRunTraceInit(pathForWebview, null, message.sourcePath || '', message.payloadTargetMode || 'auto');
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         if (refreshSidebar) refreshSidebar(pathForWebview);
         return;
@@ -2730,14 +2792,23 @@ function createHub(config) {
           startSymbol = normalizeStartSymbolForBinary(startSymbol, binaryInfoForSymbols);
 
           const payloadExprRaw = String(payload.payloadExpr || '').trim();
-          const payloadTarget = String(payload.payloadTarget || 'both').trim();
+          const payloadTargetMode = normalizePayloadTargetMode(
+            payload.payloadTargetMode || payload.payloadTarget || 'auto'
+          );
+          const payloadTargetResolution = resolvePayloadTarget({
+            mode: payloadTargetMode,
+            sourceText: readSourceTextForPayloadTarget(sourcePath)
+          });
+          const payloadTarget = payloadTargetResolution.target;
           const injectPayload = payloadExprRaw.length > 0 && (payload.injectPayload === true || payload.injectPayload === undefined);
           const injectStdin = injectPayload && (payloadTarget === 'stdin' || payloadTarget === 'both');
           const injectArgv = injectPayload && (payloadTarget === 'argv1' || payloadTarget === 'both');
           let payloadString = '';
+          let payloadHex = '';
           if (injectPayload && payloadExprRaw) {
             try {
               payloadString = normalizePayloadExpression(payloadExprRaw);
+              payloadHex = typeof payloadToHex === 'function' ? payloadToHex(payloadExprRaw) : '';
             } catch (err) {
               vscode.window.showErrorMessage(`Payload invalide: ${err.message || err}`);
               return;
@@ -2747,7 +2818,7 @@ function createHub(config) {
           const pythonArgs = [
             getRunPipelineScript(root),
             '--binary', binaryOutPath,
-            '--stdin', injectStdin ? payloadString : '',
+            '--stdin', injectStdin && !payloadHex ? payloadString : '',
             '--buffer-offset', bufferOffset,
             '--buffer-size', bufferSize,
             '--stack-entries', '40',
@@ -2755,6 +2826,7 @@ function createHub(config) {
             '--start-symbol', startSymbol,
             '--max-steps', maxSteps
           ];
+          if (injectStdin && payloadHex) pythonArgs.push('--stdin-hex', payloadHex);
           if (injectArgv) pythonArgs.push('--argv1', payloadString);
           if (!captureBinaryOnly) pythonArgs.push('--no-capture-binary');
           if (stopSymbol) pythonArgs.push('--stop-symbol', stopSymbol);
@@ -2776,6 +2848,14 @@ function createHub(config) {
             archBits,
             viewMode: 'dynamic'
           });
+          trace.meta = trace.meta && typeof trace.meta === 'object' ? trace.meta : {};
+          trace.meta.payload_target_mode = payloadTargetMode;
+          trace.meta.payload_target = payloadTarget;
+          trace.meta.payload_target_auto = payloadTargetResolution.autoTarget;
+          trace.meta.payload_target_reason = payloadTargetResolution.reason;
+          trace.meta.payload_label = payloadTargetLabel(payloadTarget);
+          trace.meta.payload_text = injectPayload ? payloadString : '';
+          trace.meta.payload_hex = injectPayload ? payloadHex : '';
           writeTraceJson(isolatedJsonPath, trace);
           activeDynamicTracePath = isolatedJsonPath;
           writeTraceJson(canonicalJsonPath, trace);
