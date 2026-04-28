@@ -16,11 +16,14 @@ const ARGV_SAVE_RE = /^\s*mov\s+(?:qword|dword)\s+ptr\s+\[(?:rbp|ebp)\s*-\s*(0x[
 const MODIFIED_INIT_RE = /^\s*mov\s+dword\s+ptr\s+\[(?:rbp|ebp)\s*-\s*(0x[0-9a-f]+|\d+)\]\s*,\s*0(?:x0+)?\s*$/i;
 const MODIFIED_CMP_RE = /^\s*cmp\s+dword\s+ptr\s+\[(?:rbp|ebp)\s*-\s*(0x[0-9a-f]+|\d+)\]\s*,\s*(0x43434343|1128481603)\s*$/i;
 const MODIFIED_REG_CMP_RE = /^\s*cmp\s+([a-z0-9]+)\s*,\s*(0x43434343|1128481603)\s*$/i;
-const LEA_BUFFER_RE = /^\s*lea\s+[a-z0-9]+\s*,\s*\[(?:rbp|ebp)\s*-\s*(0x[0-9a-f]+|\d+)\]\s*$/i;
+const LEA_BUFFER_RE = /^\s*lea\s+([a-z0-9]+)\s*,\s*\[(?:rbp|ebp)\s*-\s*(0x[0-9a-f]+|\d+)\]\s*$/i;
+const STACK_DWORD_IMM_STORE_RE = /^\s*mov\s+dword\s+ptr\s+\[(?:rbp|ebp)\s*-\s*(0x[0-9a-f]+|\d+)\]\s*,\s*(0x[0-9a-f]+|\d+)\s*$/i;
+const STACK_DWORD_IMM_CMP_RE = /^\s*cmp\s+dword\s+ptr\s+\[(?:rbp|ebp)\s*-\s*(0x[0-9a-f]+|\d+)\]\s*,\s*(0x[0-9a-f]+|\d+)\s*$/i;
 const CALL_RE = /\bcallq?\b\s+(.+)$/i;
 const BRANCH_RE = /^\s*j(?:mp|[a-z]{1,3})\b/i;
 const PROLOGUE_PUSH_RE = /^\s*push\s+(?:rbp|ebp)\b/i;
 const PROLOGUE_MOV_RE = /^\s*mov\s+(?:rbp|ebp)\s*,\s*(?:rsp|esp)\b/i;
+const PROLOGUE_SAVED_REG_PUSH_RE = /^\s*push\s+([a-z][a-z0-9]*)\b/i;
 const STACK_ALLOC_RE = /^\s*sub\s+(?:rsp|esp)\s*,\s*(0x[0-9a-f]+|\d+)\b/i;
 const LEAVE_RE = /^\s*leave\b/i;
 const RET_RE = /^\s*ret[q]?\b/i;
@@ -72,7 +75,7 @@ function sameFunction(left, right) {
   return Boolean(a && b && a === b);
 }
 
-function slotHumanLabel(slot, payloadText = '') {
+function slotHumanLabel(slot, payloadText = '', payloadLabel = 'argv[1]') {
   const rawLabel = String(slot?.label || '').toLowerCase();
   const role = String(slot?.role || '').toLowerCase();
   if (rawLabel === 'argc') return 'copie locale de argc';
@@ -81,7 +84,7 @@ function slotHumanLabel(slot, payloadText = '') {
   if (role === 'saved_bp') return 'ancienne base';
   if (role === 'return_address' || rawLabel.includes('ret')) return 'adresse de retour';
   if (role === 'buffer') return 'buffer local';
-  if (role === 'argument' && slotLooksLikePayload(slot, payloadText)) return 'contenu de argv[1]';
+  if (role === 'argument' && slotLooksLikePayload(slot, payloadText)) return `contenu de ${payloadLabel}`;
   if (role === 'argument') return 'zone argument';
   if (role === 'padding') return 'zone intermédiaire';
   if (role === 'unknown') return 'zone intermédiaire';
@@ -290,13 +293,21 @@ function inferLocalType(name, role, wordSize) {
 function seedLocalsFromDisasm(disasmEntries, meta, localsByOffset) {
   const bufferOffset = parseSignedImmediate(meta?.buffer_offset);
   const bufferSize = parseSignedImmediate(meta?.buffer_size);
+  const wordSize = Number.isFinite(Number(meta?.word_size))
+    ? Number(meta.word_size)
+    : Number(meta?.arch_bits) === 32
+    ? 4
+    : 8;
+  const leaBufferOffsets = new Set();
+  let trackingPrologueSavedRegs = false;
+  let savedRegisterOffset = 0;
   if (bufferOffset !== null && bufferSize !== null && bufferSize > 0) {
     const seeded = createLocal(bufferOffset, {
       name: 'buffer',
       role: 'buffer',
       size: bufferSize,
       cType: 'char[]',
-      confidence: 0.75,
+      confidence: 0.58,
       evidence: ['trace buffer_offset']
     });
     localsByOffset.set(bufferOffset, mergeLocal(localsByOffset.get(bufferOffset) || seeded, seeded));
@@ -305,6 +316,34 @@ function seedLocalsFromDisasm(disasmEntries, meta, localsByOffset) {
   disasmEntries.forEach((entry, index) => {
     const instr = extractInstrText(entry);
     const nextInstr = extractInstrText(disasmEntries[index + 1]);
+    if (PROLOGUE_MOV_RE.test(instr)) {
+      trackingPrologueSavedRegs = true;
+      savedRegisterOffset = 0;
+      return;
+    }
+
+    if (trackingPrologueSavedRegs && STACK_ALLOC_RE.test(instr)) {
+      trackingPrologueSavedRegs = false;
+    }
+
+    const savedRegMatch = trackingPrologueSavedRegs ? instr.match(PROLOGUE_SAVED_REG_PUSH_RE) : null;
+    if (savedRegMatch) {
+      const reg = String(savedRegMatch[1] || '').toLowerCase();
+      if (reg && reg !== 'rbp' && reg !== 'ebp') {
+        savedRegisterOffset -= wordSize;
+        const next = createLocal(savedRegisterOffset, {
+          name: `saved ${reg}`,
+          role: 'padding',
+          size: wordSize,
+          cType: '',
+          confidence: 0.94,
+          evidence: [`prologue saved ${reg}`]
+        });
+        localsByOffset.set(savedRegisterOffset, mergeLocal(localsByOffset.get(savedRegisterOffset) || next, next));
+      }
+      return;
+    }
+
     const argcMatch = instr.match(ARGC_SAVE_RE);
     if (argcMatch) {
       const offset = -Math.abs(parseSignedImmediate(argcMatch[1]) || 0);
@@ -374,9 +413,12 @@ function seedLocalsFromDisasm(disasmEntries, meta, localsByOffset) {
     }
 
     const bufferMatch = instr.match(LEA_BUFFER_RE);
-    if (bufferMatch && bufferOffset === null) {
-      const offset = -Math.abs(parseSignedImmediate(bufferMatch[1]) || 0);
+    if (bufferMatch) {
+      const destination = String(bufferMatch[1] || '').toLowerCase();
+      if (destination === 'esp' || destination === 'rsp') return;
+      const offset = -Math.abs(parseSignedImmediate(bufferMatch[2]) || 0);
       if (offset) {
+        leaBufferOffsets.add(offset);
         const next = createLocal(offset, {
           name: 'buffer',
           role: 'buffer',
@@ -386,6 +428,40 @@ function seedLocalsFromDisasm(disasmEntries, meta, localsByOffset) {
           cType: 'char[]',
           confidence: 0.9,
           evidence: ['lea to local stack address']
+        });
+        localsByOffset.set(offset, mergeLocal(localsByOffset.get(offset) || next, next));
+      }
+      return;
+    }
+
+    const genericStoreMatch = instr.match(STACK_DWORD_IMM_STORE_RE);
+    if (genericStoreMatch) {
+      const offset = -Math.abs(parseSignedImmediate(genericStoreMatch[1]) || 0);
+      if (offset) {
+        const next = createLocal(offset, {
+          name: `var_${Math.abs(offset).toString(16)}`,
+          role: 'local',
+          size: 4,
+          cType: 'int',
+          confidence: 0.72,
+          evidence: ['local immediate init']
+        });
+        localsByOffset.set(offset, mergeLocal(localsByOffset.get(offset) || next, next));
+      }
+      return;
+    }
+
+    const genericCmpMatch = instr.match(STACK_DWORD_IMM_CMP_RE);
+    if (genericCmpMatch) {
+      const offset = -Math.abs(parseSignedImmediate(genericCmpMatch[1]) || 0);
+      if (offset) {
+        const next = createLocal(offset, {
+          name: `var_${Math.abs(offset).toString(16)}`,
+          role: 'local',
+          size: 4,
+          cType: 'int',
+          confidence: 0.86,
+          evidence: [`stack compare immediate ${genericCmpMatch[2].toLowerCase()}`]
         });
         localsByOffset.set(offset, mergeLocal(localsByOffset.get(offset) || next, next));
       }
@@ -410,6 +486,22 @@ function seedLocalsFromDisasm(disasmEntries, meta, localsByOffset) {
       }
     }
   });
+
+  if (leaBufferOffsets.size) {
+    [...localsByOffset.entries()].forEach(([offset, local]) => {
+      if (leaBufferOffsets.has(offset)) return;
+      const role = String(local?.role || '').toLowerCase();
+      const name = String(local?.name || '').toLowerCase();
+      const rawLabel = String(local?.rawLabel || '').toLowerCase();
+      const evidence = Array.isArray(local?.evidence) ? local.evidence.join(' ').toLowerCase() : '';
+      const looksLikeStaleBuffer = role === 'buffer'
+        && (name === 'buffer' || rawLabel.startsWith('local_buf_'))
+        && (evidence.includes('trace buffer_offset') || rawLabel.startsWith('local_buf_'));
+      if (looksLikeStaleBuffer) {
+        localsByOffset.delete(offset);
+      }
+    });
+  }
 }
 
 function collectDisasmEntriesForFunction(traceData, focusFunctionName) {
@@ -438,9 +530,10 @@ function buildFunctionModel(traceData, focusFunctionName = '') {
     : 8;
 
   snapshots.forEach((snap, index) => {
-    if (!sameFunction(snap?.func, focusName)) return;
     const step = Number(snap?.step) || index + 1;
     const analysis = getAnalysis(traceData, step);
+    const snapFunctionName = snap?.func || analysis?.function?.name || '';
+    if (!sameFunction(snapFunctionName, focusName)) return;
     const slots = Array.isArray(analysis?.frame?.slots) ? analysis.frame.slots : [];
     slots.forEach((slot) => {
       const offset = Number(slot?.offsetFromBp);
@@ -477,8 +570,11 @@ function buildFunctionModel(traceData, focusFunctionName = '') {
     .sort((left, right) => left.offset - right.offset);
 
   const callNames = new Set();
-  snapshots.forEach((snap) => {
-    if (!sameFunction(snap?.func, focusName)) return;
+  snapshots.forEach((snap, index) => {
+    const step = Number(snap?.step) || index + 1;
+    const analysis = getAnalysis(traceData, step);
+    const snapFunctionName = snap?.func || analysis?.function?.name || '';
+    if (!sameFunction(snapFunctionName, focusName)) return;
     const external = displayFunctionName(snap?.effects?.external_symbol || '');
     if (external) callNames.add(external);
   });
@@ -786,7 +882,14 @@ function buildStackMessage(traceData, stepIndex, analysis, instructionAnalysis) 
 }
 
 function buildPayloadMessage(traceData, analysis, instructionAnalysis) {
-  const payloadText = String(traceData?.meta?.argv1 || '').trim();
+  const payloadText = String(traceData?.meta?.payload_text || traceData?.meta?.argv1 || '').trim();
+  const payloadLabel = String(traceData?.meta?.payload_label || (
+    traceData?.meta?.payload_target === 'stdin'
+      ? 'stdin'
+      : traceData?.meta?.payload_target === 'both'
+        ? 'stdin + argv[1]'
+        : 'argv[1]'
+  ));
   const payloadSlots = findPayloadSlots(analysis, payloadText);
   const overflow = analysis?.overflow && typeof analysis.overflow === 'object' ? analysis.overflow : null;
   const copiedIntoFrame = payloadSlots.some((slot) => String(slot?.role || '').toLowerCase() !== 'argument');
@@ -795,42 +898,42 @@ function buildPayloadMessage(traceData, analysis, instructionAnalysis) {
     const reached = Array.isArray(overflow.reached) && overflow.reached.length
       ? overflow.reached.map(humanizeOverflowTarget).join(', ')
       : 'les zones de controle';
-    return `Le contenu de argv[1] a deja depasse le buffer et atteint ${reached}.`;
+    return `Le contenu de ${payloadLabel} a deja depasse le buffer et atteint ${reached}.`;
   }
 
   if (instructionAnalysis?.kind === 'unsafe_call') {
     return payloadText
-      ? `argv[1] = "${payloadText}" est en train d'etre copie dans le buffer local.`
-      : "argv[1] est en train d'etre copie dans le buffer local.";
+      ? `${payloadLabel} = "${payloadText}" est en train d'etre copie dans le buffer local.`
+      : `${payloadLabel} est en train d'etre copie dans le buffer local.`;
   }
 
   if (payloadSlots.length) {
     if (instructionAnalysis?.kind === 'prologue' || instructionAnalysis?.kind === 'frame_alloc') {
-      return "argv[1] est deja present dans la pile des arguments au lancement du programme, mais pas encore copie dans le buffer local.";
+      return `${payloadLabel} est deja present au lancement du programme, mais pas encore copie dans le buffer local.`;
     }
     if (!copiedIntoFrame) {
-      return "argv[1] est deja present dans la zone des arguments, mais pas encore copie dans le buffer local.";
+      return `${payloadLabel} est deja present, mais pas encore copie dans le buffer local.`;
     }
     if (instructionAnalysis?.variable?.name === 'modified' || instructionAnalysis?.kind === 'compare_modified') {
       return "On voit maintenant que la copie a atteint la variable 'modified'.";
     }
     if (instructionAnalysis?.variable?.name === 'buffer' || instructionAnalysis?.kind === 'buffer_address') {
-      return "Le contenu de argv[1] est en train de se preparer pour la copie dans le buffer local.";
+      return `Le contenu de ${payloadLabel} est en train de se preparer pour la copie dans le buffer local.`;
     }
     const slot = payloadSlots[0];
-    const label = slotHumanLabel(slot, payloadText);
+    const label = slotHumanLabel(slot, payloadText, payloadLabel);
     return payloadText
-      ? `On retrouve encore des morceaux de argv[1] dans ${label}.`
+      ? `On retrouve encore des morceaux de ${payloadLabel} dans ${label}.`
       : `Le contenu injecte est visible dans ${label}.`;
   }
 
   const hasArgv = Array.isArray(analysis?.frame?.slots)
     && analysis.frame.slots.some((slot) => String(slot?.label || '').toLowerCase() === 'argv');
-  if (hasArgv) {
+  if (hasArgv && payloadLabel === 'argv[1]') {
     return "Le pointeur vers argv est deja en place, mais argv[1] n'a pas encore ete copie dans le buffer.";
   }
 
-  return "argv[1] n'a pas encore d'effet visible sur la pile a cette etape.";
+  return `${payloadLabel} n'a pas encore d'effet visible sur la pile a cette etape.`;
 }
 
 function buildBeginnerExplanation(traceData, stepIndex, model, instructionAnalysis) {
@@ -838,7 +941,16 @@ function buildBeginnerExplanation(traceData, stepIndex, model, instructionAnalys
   const sections = [
     { label: 'Maintenant', text: buildCurrentMessage(instructionAnalysis, model) },
     { label: 'Pile', text: buildStackMessage(traceData, stepIndex, analysis, instructionAnalysis) },
-    { label: 'argv[1]', text: buildPayloadMessage(traceData, analysis, instructionAnalysis) }
+    {
+      label: String(traceData?.meta?.payload_label || (
+        traceData?.meta?.payload_target === 'stdin'
+          ? 'stdin'
+          : traceData?.meta?.payload_target === 'both'
+            ? 'stdin + argv[1]'
+            : 'argv[1]'
+      )),
+      text: buildPayloadMessage(traceData, analysis, instructionAnalysis)
+    }
   ];
   return {
     title: 'Explications',

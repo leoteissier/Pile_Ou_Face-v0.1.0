@@ -454,6 +454,10 @@ function matchSourceLocalsToModelLocals(modelLocals, sourceLocals) {
     const sourceSize = Number(source?.byteSize || 0);
     const localRole = String(local?.role || '').toLowerCase();
     const sourceKind = String(source?.kind || '').toLowerCase();
+    const sourceName = clean(source?.name).toLowerCase();
+    const localEvidence = Array.isArray(local?.evidence)
+      ? local.evidence.map((entry) => clean(entry).toLowerCase()).join(' ')
+      : '';
 
     if (localSize && sourceSize && localSize === sourceSize) score += 500;
     else if (localRole === 'buffer' && sourceKind === 'buffer' && localSize && sourceSize && Math.abs(localSize - sourceSize) <= 16) score += 240;
@@ -463,6 +467,9 @@ function matchSourceLocalsToModelLocals(modelLocals, sourceLocals) {
     if (localRole === 'modified' && source.name.toLowerCase().includes('modified')) score += 600;
     if (localRole === 'buffer' && sourceKind === 'buffer') score += 200;
     if (localRole === 'local' && sourceKind === 'local') score += 80;
+    if (localRole === 'padding' && sourceKind !== 'padding') score -= 500;
+    if (sourceName === 'check' && /\b(compare|cmp)\b/.test(localEvidence)) score += 260;
+    if (sourceName === 'var' && /\b(compare|cmp)\b/.test(localEvidence)) score -= 120;
     if (isGenericLocalName(local?.name)) score += 60;
     score += Math.max(0, 60 - localIndex * 10);
     return score;

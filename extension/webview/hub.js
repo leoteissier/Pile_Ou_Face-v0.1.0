@@ -276,6 +276,7 @@ const dynamicSourcePathInput = document.getElementById('dynamicSourcePath');
 const dynamicSourceHint = document.getElementById('dynamicSourceHint');
 const argvPayloadInput = document.getElementById('argvPayload');
 const argvPayloadHint = document.getElementById('argvPayloadHint');
+const dynamicPayloadTargetMode = document.getElementById('dynamicPayloadTargetMode');
 const dynamicTraceHistory = document.getElementById('dynamicTraceHistory');
 const btnRefreshDynamicTraceHistory = document.getElementById('btnRefreshDynamicTraceHistory');
 const btnClearDynamicTraceHistory = document.getElementById('btnClearDynamicTraceHistory');
@@ -293,6 +294,10 @@ let dynamicTraceInitState = {
   sourceEnrichmentEnabled: false,
   sourceEnrichmentStatus: '',
   sourceEnrichmentMessage: '',
+  payloadTargetMode: 'auto',
+  payloadTargetAuto: 'argv1',
+  payloadTargetEffective: 'argv1',
+  payloadTargetReason: 'Auto: aucune source claire, fallback sur argv[1]',
   profile: {
     bufferOffset: '',
     bufferSize: '',
@@ -1685,10 +1690,47 @@ function buildDynamicSourceHintText({
   return 'Pour une meilleure analyse, ajoutez le code source C du programme.';
 }
 
+function normalizeDynamicPayloadTargetMode(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['auto', 'argv1', 'stdin', 'both'].includes(normalized) ? normalized : 'auto';
+}
+
+function normalizeDynamicEffectiveTarget(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['argv1', 'stdin', 'both'].includes(normalized) ? normalized : 'argv1';
+}
+
+function dynamicPayloadTargetLabel(target) {
+  const normalized = normalizeDynamicEffectiveTarget(target);
+  if (normalized === 'stdin') return 'stdin';
+  if (normalized === 'both') return 'stdin + argv[1]';
+  return 'argv[1]';
+}
+
+function getDynamicPayloadTargetMode() {
+  return normalizeDynamicPayloadTargetMode(
+    dynamicPayloadTargetMode?.value || dynamicTraceInitState.payloadTargetMode || 'auto'
+  );
+}
+
+function getDynamicEffectivePayloadTarget() {
+  const mode = getDynamicPayloadTargetMode();
+  if (mode !== 'auto') return normalizeDynamicEffectiveTarget(mode);
+  return normalizeDynamicEffectiveTarget(dynamicTraceInitState.payloadTargetAuto || dynamicTraceInitState.payloadTargetEffective);
+}
+
+function buildDynamicPayloadTargetHint() {
+  const mode = getDynamicPayloadTargetMode();
+  if (mode !== 'auto') return `${dynamicPayloadTargetLabel(mode)} force manuellement.`;
+  return String(dynamicTraceInitState.payloadTargetReason || 'Auto: aucune source claire, fallback sur argv[1]');
+}
+
 function requestRunTraceInit(preset = null, forcedBinaryPath = '') {
   vscode.postMessage({
     type: 'requestRunTraceInit',
     binaryPath: forcedBinaryPath || binaryPathInput?.value?.trim() || '',
+    sourcePath: dynamicSourcePathInput?.value?.trim() || dynamicTraceInitState.sourcePath || '',
+    payloadTargetMode: getDynamicPayloadTargetMode(),
     preset
   });
 }
@@ -1696,37 +1738,93 @@ function requestRunTraceInit(preset = null, forcedBinaryPath = '') {
 function parsePayloadExpressionPreview(input) {
   const text = String(input || '').trim();
   if (!text) return { bytes: 0, preview: '' };
-  if (!/[+*]/.test(text)) return { bytes: text.length, preview: text };
+  if (!/[+*\\]/.test(text)) return { bytes: text.length, preview: text };
 
   const parts = text.split('+').map((part) => part.trim()).filter(Boolean);
   if (!parts.length) return { bytes: 0, preview: '' };
-  let result = '';
+  let preview = '';
+  let bytes = 0;
+  const decodedLength = (value) => {
+    let count = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      if (value[index] === '\\' && value[index + 1] === 'x' && /^[0-9a-fA-F]{2}$/.test(value.slice(index + 2, index + 4))) {
+        count += 1;
+        index += 3;
+      } else if (value[index] === '\\' && ['n', 'r', 't', '0', '\\'].includes(value[index + 1])) {
+        count += 1;
+        index += 1;
+      } else {
+        count += new TextEncoder().encode(value[index]).length;
+      }
+    }
+    return count;
+  };
   for (const part of parts) {
     const match = part.match(/^(.+?)\*(\d+)$/);
     if (match) {
       const count = parseInt(match[2], 10);
       if (!Number.isFinite(count) || count < 0) throw new Error('compteur invalide');
-      result += match[1].repeat(count);
+      bytes += decodedLength(match[1]) * count;
+      preview += match[1].repeat(Math.min(count, 16));
     } else {
-      result += part;
+      bytes += decodedLength(part);
+      preview += part;
     }
   }
-  return { bytes: result.length, preview: result };
+  return { bytes, preview };
+}
+
+function bytesToCompactHex(bytes) {
+  return `0x${(Array.isArray(bytes) ? bytes : [])
+    .map((value) => Number(value).toString(16).padStart(2, '0'))
+    .join('')}`;
+}
+
+function bytesToSpacedHex(bytes) {
+  return (Array.isArray(bytes) ? bytes : [])
+    .map((value) => Number(value).toString(16).padStart(2, '0'))
+    .join(' ');
+}
+
+function bytesToEscapedHex(bytes) {
+  return (Array.isArray(bytes) ? bytes : [])
+    .map((value) => `\\x${Number(value).toString(16).padStart(2, '0').toUpperCase()}`)
+    .join('');
+}
+
+function buildPayloadEndianHint(input) {
+  const text = String(input || '').trim();
+  if (!text) return '';
+  const escapedDword = text.match(/(?:\\x[0-9a-fA-F]{2}){4}/);
+  if (!escapedDword) return '';
+  const bytes = Array.from(
+    escapedDword[0].matchAll(/\\x([0-9a-fA-F]{2})/g),
+    (match) => parseInt(match[1], 16)
+  );
+  if (bytes.length !== 4) return '';
+  const littleEndianRead = [...bytes].reverse();
+  const writtenHex = bytesToCompactHex(bytes);
+  const readHex = bytesToCompactHex(littleEndianRead);
+  if (writtenHex === readHex) return '';
+  return `Endian: ${bytesToSpacedHex(bytes)} donne ${readHex} si le programme relit ce dword en little-endian. Pour viser ${writtenHex}, utilise ${bytesToEscapedHex(littleEndianRead)}.`;
 }
 
 function updateArgvPayloadHint() {
   if (!argvPayloadHint) return;
   const raw = argvPayloadInput?.value ?? '';
   const trimmed = raw.trim();
+  const targetHint = buildDynamicPayloadTargetHint();
+  const currentTarget = dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget());
   if (!trimmed) {
-    argvPayloadHint.textContent = 'Injecté comme argument de ligne de commande. Pratique pour tester rapidement un overflow.';
+    argvPayloadHint.textContent = targetHint;
     return;
   }
   try {
     const parsed = parsePayloadExpressionPreview(trimmed);
-    argvPayloadHint.textContent = `argv[1] courant: ${parsed.bytes} byte(s).`;
+    const endianHint = buildPayloadEndianHint(trimmed);
+    argvPayloadHint.textContent = `Payload courant: ${parsed.bytes} byte(s). Cible effective: ${currentTarget}. ${targetHint}${endianHint ? ` ${endianHint}` : ''}`;
   } catch (_) {
-    argvPayloadHint.textContent = 'Expression argv[1] invalide.';
+    argvPayloadHint.textContent = 'Expression payload invalide.';
   }
 }
 
@@ -1760,7 +1858,8 @@ function renderDynamicTraceHistory() {
     title.className = 'dynamic-history-title';
     const runLabel = item.runId ? `#${item.runId}` : item.fileName || 'run';
     const stepsLabel = `${Number(item.steps || 0)} step(s)`;
-    const argvLabel = item.argvBytes ? `${Number(item.argvBytes)} byte(s)` : 'sans argv';
+    const payloadName = item.payloadLabel || 'payload';
+    const argvLabel = item.argvBytes ? `${payloadName}: ${Number(item.argvBytes)} byte(s)` : 'sans payload';
     title.textContent = `${runLabel} • ${stepsLabel} • ${argvLabel}`;
 
     const meta = document.createElement('div');
@@ -1813,6 +1912,8 @@ function renderDynamicTraceHistory() {
 
 function applyRunTraceInit(msg) {
   const previousArgvPayload = argvPayloadInput?.value ?? '';
+  const previousPayloadTargetMode = getDynamicPayloadTargetMode();
+  const nextPayloadTargetMode = normalizeDynamicPayloadTargetMode(msg.payloadTargetMode || previousPayloadTargetMode);
   dynamicTraceInitState = {
     archBits: Number(msg.archBits) === 32 ? 32 : 64,
     pie: msg.pie === true,
@@ -1820,6 +1921,10 @@ function applyRunTraceInit(msg) {
     sourceEnrichmentEnabled: msg.sourceEnrichmentEnabled === true,
     sourceEnrichmentStatus: String(msg.sourceEnrichmentStatus || '').trim(),
     sourceEnrichmentMessage: String(msg.sourceEnrichmentMessage || '').trim(),
+    payloadTargetMode: nextPayloadTargetMode,
+    payloadTargetAuto: normalizeDynamicEffectiveTarget(msg.payloadTargetAuto || 'argv1'),
+    payloadTargetEffective: normalizeDynamicEffectiveTarget(msg.payloadTargetEffective || msg.payloadTargetAuto || 'argv1'),
+    payloadTargetReason: String(msg.payloadTargetReason || '').trim() || 'Auto: aucune source claire, fallback sur argv[1]',
     profile: {
       bufferOffset: msg?.mvpProfile?.bufferOffset ?? '',
       bufferSize: msg?.mvpProfile?.bufferSize ?? '',
@@ -1833,6 +1938,7 @@ function applyRunTraceInit(msg) {
   setTraceField('binaryPath', msg.binaryPath || '');
   setTraceField('sourcePath', dynamicTraceInitState.sourcePath || '');
   setTraceField('argvPayload', typeof profile.argvPayload === 'string' ? profile.argvPayload : previousArgvPayload);
+  if (dynamicPayloadTargetMode) dynamicPayloadTargetMode.value = nextPayloadTargetMode;
 
   if (dynamicArchBits) dynamicArchBits.textContent = `${dynamicTraceInitState.archBits}-bit`;
   if (dynamicPie) dynamicPie.textContent = dynamicTraceInitState.pie ? 'Yes' : 'No';
@@ -2464,6 +2570,11 @@ dynamicSourcePathInput?.addEventListener('input', () => {
     dynamicTraceInitState.sourceEnrichmentMessage = '';
   }
   if (dynamicSourceHint) dynamicSourceHint.textContent = buildDynamicSourceHintText(dynamicTraceInitState);
+  updateArgvPayloadHint();
+});
+
+dynamicSourcePathInput?.addEventListener('blur', () => {
+  requestRunTraceInit(null, binaryPathInput?.value?.trim() || '');
 });
 
 
@@ -5314,7 +5425,8 @@ form?.addEventListener('submit', (e) => {
       stopSymbol: String(dynamicTraceInitState.profile.stopSymbol || ''),
       injectPayload: !!(argvPayloadInput?.value?.trim()),
       payloadExpr: argvPayloadInput?.value?.trim() || '',
-      payloadTarget: 'argv1',
+      payloadTargetMode: getDynamicPayloadTargetMode(),
+      payloadTarget: getDynamicPayloadTargetMode(),
     }
   });
 });
@@ -5395,16 +5507,20 @@ function applyDynamicPreset({
   startSymbol,
   targetSymbol,
   payloadExpr,
+  payloadTarget,
   maxSteps,
   suggestedOffset,
   suggestedCaptureSize,
   binaryPath
 }) {
   showPanel('dynamic');
+  const presetTargetMode = normalizeDynamicPayloadTargetMode(payloadTarget || getDynamicPayloadTargetMode());
+  if (dynamicPayloadTargetMode) dynamicPayloadTargetMode.value = presetTargetMode;
   requestRunTraceInit({
     startSymbol,
     targetSymbol,
     payloadExpr,
+    payloadTargetMode: presetTargetMode,
     maxSteps,
     suggestedOffset,
     suggestedCaptureSize,
@@ -10642,6 +10758,8 @@ window.addEventListener('message', (event) => {
         dynamicTraceInitState.sourceEnrichmentStatus = 'pending';
         dynamicTraceInitState.sourceEnrichmentMessage = '';
         if (dynamicSourceHint) dynamicSourceHint.textContent = buildDynamicSourceHintText(dynamicTraceInitState);
+        updateArgvPayloadHint();
+        requestRunTraceInit(null, binaryPathInput?.value?.trim() || '');
       }
       if (input.closest('#panel-options')) _scheduleSave();
     }
@@ -11722,10 +11840,16 @@ argvPayloadInput?.addEventListener('input', () => {
   }
   try {
     const parsed = parsePayloadExpressionPreview(raw);
-    setDynamicTraceStatus(`argv[1] prêt: ${parsed.bytes} byte(s).`);
+    setDynamicTraceStatus(`${dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget())} prêt: ${parsed.bytes} byte(s).`);
   } catch (_) {
-    setDynamicTraceStatus('Expression argv[1] invalide.');
+    setDynamicTraceStatus('Expression payload invalide.');
   }
+});
+
+dynamicPayloadTargetMode?.addEventListener('change', () => {
+  dynamicTraceInitState.payloadTargetMode = getDynamicPayloadTargetMode();
+  updateArgvPayloadHint();
+  requestRunTraceInit(null, binaryPathInput?.value?.trim() || '');
 });
 
 // Platform

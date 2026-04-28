@@ -53,7 +53,8 @@ function buildSections(snap, meta, analysis, mcp) {
   const overflow = analysis?.overflow && typeof analysis.overflow === 'object' ? analysis.overflow : null;
   const writes = Array.isArray(analysis?.delta?.writes) ? analysis.delta.writes : [];
   const reads = Array.isArray(analysis?.delta?.reads) ? analysis.delta.reads : [];
-  const payload = String(meta?.argv1 || '').trim();
+  const payload = String(meta?.payload_text || meta?.argv1 || '').trim();
+  const payloadLabel = String(meta?.payload_label || (meta?.payload_target === 'stdin' ? 'stdin' : meta?.payload_target === 'both' ? 'stdin + argv[1]' : 'argv[1]'));
 
   const stackText = writes.length
     ? `Cette instruction ecrit dans la pile. ${explainStackEffect(instr)}`
@@ -61,9 +62,9 @@ function buildSections(snap, meta, analysis, mcp) {
     ? `Cette instruction lit dans la pile. ${explainStackEffect(instr)}`
     : explainStackEffect(instr);
 
-  let payloadText = "argv[1] n'a pas encore d'effet visible ici.";
+  let payloadText = `${payloadLabel} n'a pas encore d'effet visible ici.`;
   if (payload) {
-    payloadText = `Le payload courant est "${payload}".`;
+    payloadText = `${payloadLabel} courant: "${payload}".`;
   }
   if (overflow?.active) {
     const reached = Array.isArray(overflow.reached) && overflow.reached.length
@@ -84,7 +85,7 @@ function buildSections(snap, meta, analysis, mcp) {
       text: stackText
     },
     {
-      label: 'argv[1]',
+      label: payloadLabel,
       text: payloadText
     }
   ];

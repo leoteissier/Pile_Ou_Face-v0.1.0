@@ -63,6 +63,13 @@ class TestVulnPatterns(unittest.TestCase):
         vulns = _check_dangerous_imports(imports)
         self.assertGreater(len(vulns), 0)
 
+    def test_isoc23_scanf_detected_as_stack_overflow(self):
+        imports = [{"name": "__isoc23_scanf@GLIBC_2.38"}]
+        vulns = _check_dangerous_imports(imports)
+
+        self.assertTrue(any(v["function"] == "__isoc23_scanf@GLIBC_2.38" for v in vulns))
+        self.assertTrue(any(v["type"] == "STACK_OVERFLOW" for v in vulns))
+
     def test_severity_values_valid(self):
         imports = [{"name": "gets"}, {"name": "system"}, {"name": "strcpy"}]
         vulns = _check_dangerous_imports(imports)

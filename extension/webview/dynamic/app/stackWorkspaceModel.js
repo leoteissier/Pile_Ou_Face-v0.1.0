@@ -259,7 +259,7 @@ function buildCanonicalFrameModel({
     frameScope
   });
 
-  const entryBases = [...runtimeEvidence.entries, ...syntheticEntries]
+  const rawEntryBases = [...runtimeEvidence.entries, ...syntheticEntries]
     .map((entry) => finalizeEntryBase(entry, {
       functionName,
       bpRegister,
@@ -271,10 +271,14 @@ function buildCanonicalFrameModel({
     .filter((entry) => isFinalEntryAllowedInFrame(entry, frameScope))
     .sort(compareFrameEntries);
 
-  assignStableFallbackNames(entryBases, {
+  assignStableFallbackNames(rawEntryBases, {
     functionName,
     bpRegister,
     meta
+  });
+
+  const entryBases = filterSourceSimpleFrameEntries(rawEntryBases, {
+    model
   });
 
   const logicalArguments = buildLogicalArgumentEntries({
@@ -2099,6 +2103,31 @@ function isFinalEntryAllowedInFrame(entry, frameScope) {
   return true;
 }
 
+function filterSourceSimpleFrameEntries(entries, { model } = {}) {
+  if (!hasSourceBackedModel(model)) return Array.isArray(entries) ? entries : [];
+  return (Array.isArray(entries) ? entries : [])
+    .filter((entry) => !shouldHideSourceSimpleFrameEntry(entry));
+}
+
+function hasSourceBackedModel(model) {
+  if (!model || !model.sourceFunction) return false;
+  return (Array.isArray(model?.locals) ? model.locals : [])
+    .some((local) => normalizeSource(local?.source) === 'source_c');
+}
+
+function shouldHideSourceSimpleFrameEntry(entry) {
+  const kind = normalizeEntryKind(entry?.kind);
+  if (isProtectedKind(kind) || kind === 'argument' || kind === 'buffer' || kind === 'modified') return false;
+
+  const source = normalizeSource(entry?.source);
+  const nameSource = normalizeSource(entry?.nameSource || entry?.preferredNameSource);
+  if (source === 'source_c' || nameSource === 'source_c') return false;
+
+  if (kind === 'padding') return true;
+  if (entry?.isSynthetic && (kind === 'unknown' || kind === 'slot')) return true;
+  return false;
+}
+
 function assignStableFallbackNames(entries, { functionName, bpRegister, meta } = {}) {
   const counters = new Map();
   (Array.isArray(entries) ? entries : []).forEach((entry) => {
@@ -2454,13 +2483,16 @@ function buildDetailPayload({
   if (slotValue) rows.push({ label: 'Valeur du slot', value: slotValue });
 
   const pointerValue = pickPointerValue(primaryObservation, entry?.size);
-  const pointerLike = Boolean(pointerValue);
-  if (pointerLike) rows.push({ label: 'Pointeur', value: pointerValue });
-
-  const pointedEntry = pointerLike ? resolvePointedEntry(pointerValue, allEntries, entry) : null;
-  const pointedObservation = !pointedEntry && pointerLike
+  const pointedEntry = pointerValue ? resolvePointedEntry(pointerValue, allEntries, entry) : null;
+  const pointedObservation = !pointedEntry && pointerValue
     ? resolvePointedObservation(pointerValue, allObservations, entry)
     : null;
+  const pointerLike = Boolean(pointerValue && (
+    clean(primaryObservation?.pointerKind)
+    || pointedEntry
+    || pointedObservation
+  ));
+  if (pointerLike) rows.push({ label: 'Pointeur', value: pointerValue });
   if (pointedEntry) {
     rows.push({
       label: 'Memoire pointee',
@@ -3200,11 +3232,11 @@ function pickAscii(observations) {
 }
 
 function pickHexValue(primaryObservation, observations) {
-  if (clean(primaryObservation?.rawValue).startsWith('0x')) return clean(primaryObservation.rawValue);
   if (clean(primaryObservation?.bytesHex)) return clean(primaryObservation.bytesHex);
   return (Array.isArray(observations) ? observations : [])
     .map((item) => clean(item?.bytesHex))
-    .find(Boolean) || '';
+    .find(Boolean)
+    || (clean(primaryObservation?.rawValue).startsWith('0x') ? clean(primaryObservation.rawValue) : '');
 }
 
 function pickBytes(observations) {

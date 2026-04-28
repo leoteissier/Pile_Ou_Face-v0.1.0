@@ -16,6 +16,10 @@ describe("payloadToHex", () => {
     expect(extension.payloadToHex("43 43 43 43")).to.equal("43434343");
   });
 
+  it("expands expressions and raw byte escapes to hex", () => {
+    expect(extension.payloadToHex("A*4+\\xef\\xbe\\xad\\xde")).to.equal("41414141efbeadde");
+  });
+
   it("throws on empty input", () => {
     expect(() => extension.payloadToHex("")).to.throw("payload vide");
     expect(() => extension.payloadToHex("   ")).to.throw("payload vide");

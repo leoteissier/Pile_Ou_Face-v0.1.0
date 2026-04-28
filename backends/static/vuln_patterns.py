@@ -65,9 +65,12 @@ def _normalize_import_name(raw: str) -> str:
     name = raw.lower()
     # Strip version suffix: gets@@GLIBC_2.2.5 or puts@GLIBC_2.2.5 -> base name
     name = re.sub(r"@@?[^@]+$", "", name)
-    # C99 ISO variant: __isoc99_scanf -> scanf (must run before single-_ strip)
-    if name.startswith("__isoc99_"):
-        name = name[len("__isoc99_") :]
+    # ISO libc variants: __isoc99_scanf / __isoc23_scanf -> scanf.
+    # This must run before single-_ strip so the double-underscore prefix is kept intact.
+    for prefix in ("__isoc99_", "__isoc23_"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
     # Fortified versions (__strcpy_chk) are safe — skip matching
     if name.endswith("_chk"):
         return ""

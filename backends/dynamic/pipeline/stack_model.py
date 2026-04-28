@@ -219,6 +219,73 @@ def _instruction_text(snapshot: dict) -> str:
     return str(snapshot.get("instr") or "").strip()
 
 
+def _function_cache_key(function_info: Optional[dict], snapshot: dict) -> Optional[str]:
+    addr = _parse_int(function_info.get("addr")) if isinstance(function_info, dict) else None
+    if addr is not None:
+        return f"addr:{addr:x}"
+    name = ""
+    if isinstance(function_info, dict):
+        name = str(function_info.get("name") or "").strip()
+    if not name:
+        name = str(snapshot.get("func") or "").strip()
+    return f"name:{name}" if name else None
+
+
+def _is_plausible_frame_bp(
+    bp: Optional[int],
+    snapshot: dict,
+    meta: dict,
+    word_size: int,
+) -> bool:
+    if bp is None or bp < 0:
+        return False
+    if word_size > 1 and bp % word_size != 0:
+        return False
+
+    stack_base = _parse_int(meta.get("stack_base"))
+    stack_size = _parse_int(meta.get("stack_size")) or 0
+    if stack_base is not None and stack_size > 0:
+        stack_end = stack_base + stack_size
+        if stack_base <= bp < stack_end:
+            return True
+
+    window_start, window_data = _memory_window(snapshot)
+    if window_start is None or not window_data:
+        return False
+    window_end = window_start + len(window_data)
+    margin = max(0x100, word_size * 8)
+    return (window_start - margin) <= bp < (window_end + margin)
+
+
+def _select_frame_base_pointer(
+    snapshot: dict,
+    meta: dict,
+    arch_bits: int,
+    word_size: int,
+    stable_bp: Optional[int],
+) -> Optional[int]:
+    regs_after = _normalize_reg_map(snapshot, "after")
+    regs_before = _normalize_reg_map(snapshot, "before")
+    aliases = _register_aliases(regs_after or regs_before, arch_bits)
+    bp_name = aliases.get("bp")
+    bp_after = regs_after.get(bp_name) if bp_name else None
+    bp_before = regs_before.get(bp_name) if bp_name else None
+    mnemonic = _instruction_text(snapshot).split(" ", 1)[0].strip().lower()
+
+    candidates = (
+        [bp_before, bp_after, stable_bp]
+        if mnemonic == "leave"
+        else [bp_after, bp_before, stable_bp]
+    )
+    for candidate in candidates:
+        if _is_plausible_frame_bp(candidate, snapshot, meta, word_size):
+            return candidate
+    for candidate in candidates:
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def _instruction_mnemonic(snapshot: dict) -> str:
     if isinstance(snapshot.get("instruction"), dict):
         return str(snapshot["instruction"].get("mnemonic") or "").strip().lower()
@@ -789,6 +856,7 @@ def _build_slots(
     meta: dict,
     resolver: StaticTraceResolver,
     function_info: Optional[dict],
+    frame_bp: Optional[int] = None,
 ) -> dict:
     arch_bits = _parse_int(meta.get("arch_bits")) or 64
     word_size = _parse_int(meta.get("word_size")) or (8 if arch_bits == 64 else 4)
@@ -798,7 +866,8 @@ def _build_slots(
     sp_name = aliases.get("sp")
     bp_name = aliases.get("bp")
     sp = regs_after.get(sp_name) if sp_name else None
-    bp = regs_after.get(bp_name) if bp_name else None
+    bp_actual = regs_after.get(bp_name) if bp_name else None
+    bp = frame_bp if frame_bp is not None else bp_actual
     func_addr = _parse_int(function_info.get("addr")) if function_info else None
     frame = resolver.frame_for_function(func_addr)
     convention = resolver.convention_for_function(func_addr) or {}
@@ -918,7 +987,7 @@ def _build_slots(
             "comment": comment,
             "activePointers": [
                 pointer_name
-                for pointer_name, pointer_addr in (("sp", sp), ("bp", bp))
+                for pointer_name, pointer_addr in (("sp", sp), ("bp", bp_actual))
                 if pointer_addr is not None and left <= pointer_addr < right
             ],
         }
@@ -957,6 +1026,7 @@ def _build_slots(
             "savedBpAddr": _hex(bp),
             "retAddrAddr": _hex(bp + word_size) if bp is not None else None,
             "basePointer": _hex(bp),
+            "registerBasePointer": _hex(bp_actual),
             "stackPointer": _hex(sp),
             "frameSize": _parse_int(frame.get("frame_size")) or 0,
             "registerArguments": [
@@ -1167,10 +1237,13 @@ def build_dynamic_analysis(
 
     resolver = StaticTraceResolver(binary_path, meta, disasm_lines or [])
     analysis_by_step: dict[str, dict] = {}
+    stable_frame_bp_by_function: dict[str, int] = {}
 
     for index, snapshot in enumerate(snapshots):
         prev_snapshot = snapshots[index - 1] if index > 0 else None
         regs_after = _normalize_reg_map(snapshot, "after")
+        arch_bits = _parse_int(meta.get("arch_bits")) or 64
+        word_size = _parse_int(meta.get("word_size")) or (8 if arch_bits == 64 else 4)
         ip = (
             regs_after.get("rip")
             or regs_after.get("eip")
@@ -1178,7 +1251,20 @@ def build_dynamic_analysis(
             or _parse_int(snapshot.get("eip"))
         )
         function_info = resolver.resolve_function(ip, fallback_name=snapshot.get("func"))
-        analysis = _build_slots(snapshot, prev_snapshot, meta, resolver, function_info)
+        function_key = _function_cache_key(function_info, snapshot)
+        stable_bp = stable_frame_bp_by_function.get(function_key) if function_key else None
+        frame_bp = _select_frame_base_pointer(snapshot, meta, arch_bits, word_size, stable_bp)
+        if function_key and _is_plausible_frame_bp(frame_bp, snapshot, meta, word_size):
+            stable_frame_bp_by_function[function_key] = int(frame_bp)
+
+        analysis = _build_slots(
+            snapshot,
+            prev_snapshot,
+            meta,
+            resolver,
+            function_info,
+            frame_bp=frame_bp,
+        )
         analysis["overflow"] = _overflow_summary(analysis)
         analysis["explanationBullets"] = _build_explanation(snapshot, analysis)
         analysis["function"].setdefault("name", snapshot.get("func"))

@@ -198,6 +198,169 @@ def _consume_stdin_line(state: dict, max_len: int) -> bytes:
     return chunk
 
 
+def _read_c_string_from_memory(
+    uc, addr: int, max_len: int = 0x2000
+) -> Optional[str]:
+    if addr == 0:
+        return None
+    size = _strlen_at(uc, addr, max_len=max_len)
+    if size is None:
+        return None
+    raw = _safe_read_bytes(uc, addr, size)
+    return raw.decode("utf-8", errors="replace")
+
+
+def _skip_stdin_whitespace(state: dict) -> int:
+    data = state.get("stdin_data", b"")
+    pos = int(state.get("stdin_pos", 0))
+    start = pos
+    while pos < len(data) and chr(data[pos]).isspace():
+        pos += 1
+    state["stdin_pos"] = pos
+    return pos - start
+
+
+def _consume_stdin_literal(state: dict, literal: str) -> bool:
+    data = state.get("stdin_data", b"")
+    pos = int(state.get("stdin_pos", 0))
+    encoded = literal.encode("utf-8", errors="ignore")
+    if not encoded:
+        return False
+    end = pos + len(encoded)
+    if end > len(data) or data[pos:end] != encoded:
+        return False
+    state["stdin_pos"] = end
+    return True
+
+
+def _consume_stdin_token(state: dict, width: Optional[int] = None) -> bytes:
+    _skip_stdin_whitespace(state)
+    data = state.get("stdin_data", b"")
+    pos = int(state.get("stdin_pos", 0))
+    if pos >= len(data):
+        return b""
+    end = len(data) if width is None else min(len(data), pos + width)
+    cursor = pos
+    while cursor < end and not chr(data[cursor]).isspace():
+        cursor += 1
+    state["stdin_pos"] = cursor
+    return data[pos:cursor]
+
+
+def _iterate_scanf_tokens(fmt: str) -> List[dict]:
+    tokens: List[dict] = []
+    idx = 0
+    while idx < len(fmt):
+        ch = fmt[idx]
+        if ch.isspace():
+            while idx < len(fmt) and fmt[idx].isspace():
+                idx += 1
+            tokens.append({"kind": "whitespace"})
+            continue
+        if ch != "%":
+            tokens.append({"kind": "literal", "value": ch})
+            idx += 1
+            continue
+
+        idx += 1
+        if idx >= len(fmt):
+            break
+        if fmt[idx] == "%":
+            tokens.append({"kind": "literal", "value": "%"})
+            idx += 1
+            continue
+
+        assign = True
+        if fmt[idx] == "*":
+            assign = False
+            idx += 1
+
+        width_start = idx
+        while idx < len(fmt) and fmt[idx].isdigit():
+            idx += 1
+        width = int(fmt[width_start:idx]) if idx > width_start else None
+
+        if idx + 1 < len(fmt) and fmt[idx : idx + 2] in {"hh", "ll"}:
+            idx += 2
+        elif idx < len(fmt) and fmt[idx] in {"h", "l", "j", "z", "t", "L"}:
+            idx += 1
+
+        if idx >= len(fmt):
+            break
+        tokens.append(
+            {
+                "kind": "conversion",
+                "value": fmt[idx],
+                "width": width,
+                "assign": assign,
+            }
+        )
+        idx += 1
+    return tokens
+
+
+def _simulate_scanf_call(
+    uc,
+    arg_reader,
+    state: dict,
+    format_arg_index: int,
+) -> Optional[int]:
+    fmt_addr = arg_reader(format_arg_index)
+    if fmt_addr is None:
+        return None
+    fmt = _read_c_string_from_memory(uc, fmt_addr)
+    if fmt is None:
+        return None
+
+    assignments = 0
+    next_arg_index = format_arg_index + 1
+    supported = False
+
+    for token in _iterate_scanf_tokens(fmt):
+        kind = token.get("kind")
+        if kind == "whitespace":
+            _skip_stdin_whitespace(state)
+            continue
+
+        if kind == "literal":
+            if not _consume_stdin_literal(state, str(token.get("value", ""))):
+                break
+            continue
+
+        if kind != "conversion":
+            continue
+
+        conv = str(token.get("value", ""))
+        width = token.get("width")
+        assign = bool(token.get("assign", True))
+
+        if conv != "s":
+            return None if not supported and assignments == 0 else assignments
+
+        supported = True
+        chunk = _consume_stdin_token(state, width)
+        if not chunk:
+            break
+
+        if not assign:
+            continue
+
+        dst = arg_reader(next_arg_index)
+        if dst is None:
+            return None
+        next_arg_index += 1
+
+        payload = chunk + b"\x00"
+        try:
+            uc.mem_write(dst, payload)
+        except UcError:
+            return None
+        _record_external_access(state, "writes", dst, len(payload), payload)
+        assignments += 1
+
+    return assignments
+
+
 def _bytes_to_hex(data: bytes | bytearray | list[int]) -> str:
     return " ".join(f"{int(byte) & 0xFF:02x}" for byte in bytes(data))
 
@@ -259,8 +422,10 @@ def _symbol_key(symbol_name: Optional[str]) -> Optional[str]:
     if not symbol_name:
         return None
     plain = symbol_name.split("@", 1)[0]
-    if plain.startswith("__isoc99_"):
-        plain = plain[len("__isoc99_") :]
+    for prefix in ("__isoc99_", "__isoc23_"):
+        if plain.startswith(prefix):
+            plain = plain[len(prefix) :]
+            break
     if plain.startswith("__GI_"):
         plain = plain[len("__GI_") :]
     return plain
@@ -502,6 +667,13 @@ def _simulate_symbol_with_args(
             _record_external_access(state, "writes", dst, len(chunk), chunk)
         mark()
         return len(chunk)
+
+    if key in {"scanf"}:
+        assigned = _simulate_scanf_call(uc, arg, state, format_arg_index=0)
+        if assigned is None:
+            return None
+        mark()
+        return assigned
 
     if key in {"puts", "printf", "fprintf", "__printf_chk", "perror"}:
         # Ignore output side effects, but keep control flow moving.
