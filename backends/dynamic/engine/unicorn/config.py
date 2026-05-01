@@ -10,7 +10,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple, Union
+from typing import Mapping, Optional, Sequence, Tuple, Union
 
 
 @dataclass
@@ -46,6 +46,9 @@ class TraceConfig:
     start_symbol: Optional[str]
     # Optional argv[1] string injected into the initial stack.
     argv1: Optional[str]
+    # Optional exact argv[1] bytes. Cannot contain NUL because argv strings are
+    # NUL-terminated by the ABI.
+    argv1_data: Optional[bytes] = None
     # Optional symbol name to stop at (e.g. win).
     stop_symbol: Optional[str] = None
     # Optional address at which to start recording snapshots (skip loader).
@@ -63,3 +66,5 @@ class TraceConfig:
     # Optional payload injected at start: (offset_from_initial_sp, bytes).
     # Visible dès le 1er snapshot. Éviter si le programme initialise cette zone ensuite.
     stack_payload: Optional[Tuple[int, bytes]] = None
+    # Guest path -> file bytes mapping for simulated libc FILE* calls.
+    virtual_files: Optional[Mapping[str, bytes]] = None

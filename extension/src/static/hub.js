@@ -49,6 +49,7 @@ const {
   getOffsetToVaddrScript,
   getAsmStaticScript,
   getRunPipelineScript,
+  getPayloadScriptRunnerScript,
   getExampleCandidates,
 } = require('../shared/paths');
 const { buildTraceSourceEnrichment } = require('../dynamic/sourceCEnrichment');
@@ -143,6 +144,37 @@ function createHub(config) {
     );
     hubPanelRef = panel;
     panel.onDidDispose(() => { hubPanelRef = null; });
+
+    // ── Watcher decompilers.json — actualisation automatique du panneau ─────────
+    const _decompilersConfigPath = path.join(root, '.pile-ou-face', 'decompilers.json');
+    const _refreshDecompilerList = async () => {
+      try {
+        const { stdout } = await new Promise((resolve, reject) => {
+          cp.execFile(
+            pythonExe,
+            [path.join(root, 'backends/static/decompile/decompile.py'), '--list', '--provider', 'auto'],
+            { encoding: 'utf8', cwd: root, maxBuffer: 2 * 1024 * 1024, timeout: 30000, env: pythonEnv },
+            (err, stdout, stderr) => err ? reject(Object.assign(err, { stderr })) : resolve({ stdout }),
+          );
+        });
+        const result = JSON.parse(stdout);
+        panel.webview.postMessage({ type: 'hubDecompilerList', result });
+      } catch (_) {}
+    };
+
+    // Watcher sur le fichier de config — debounce 600 ms pour éviter les doubles triggers
+    let _decompilerWatchDebounce = null;
+    const _decompilerConfigWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, '.pile-ou-face/decompilers.json'),
+    );
+    const _onDecompilerConfigChange = () => {
+      clearTimeout(_decompilerWatchDebounce);
+      _decompilerWatchDebounce = setTimeout(_refreshDecompilerList, 600);
+    };
+    _decompilerConfigWatcher.onDidChange(_onDecompilerConfigChange);
+    _decompilerConfigWatcher.onDidCreate(_onDecompilerConfigChange);
+    _decompilerConfigWatcher.onDidDelete(_onDecompilerConfigChange);
+    panel.onDidDispose(() => { _decompilerConfigWatcher.dispose(); clearTimeout(_decompilerWatchDebounce); });
 
     // Auto-detect address when user clicks a line in the .disasm.asm file
     const parseDisasmSelectionContext = (lineText) => {
@@ -241,6 +273,19 @@ function createHub(config) {
     const toWebviewPath = (absolutePath) => {
       const relPath = path.relative(root, absolutePath);
       return relPath.startsWith('..') ? absolutePath : relPath;
+    };
+    const inferSourcePathForBinary = (binaryPath = '') => {
+      const requestedBinaryPath = String(binaryPath || '').trim();
+      if (!requestedBinaryPath) return '';
+      const absoluteBinaryPath = resolvePathFromWorkspace(requestedBinaryPath);
+      const parsed = path.parse(absoluteBinaryPath);
+      const baseName = parsed.name.replace(/\.elf$/i, '');
+      const candidates = [
+        path.join(parsed.dir, `${baseName}.c`),
+        path.join(root, 'examples', `${baseName}.c`),
+      ];
+      const found = candidates.find((candidate) => fs.existsSync(candidate));
+      return found ? toWebviewPath(found) : '';
     };
     const readSourceTextForPayloadTarget = (sourcePath = '') => {
       const requestedSourcePath = String(sourcePath || '').trim();
@@ -978,6 +1023,56 @@ function createHub(config) {
           ? parseStdinExpression(input)
           : String(input || '')
       );
+      const normalizeInputHex = (value) => {
+        const cleaned = String(value || '').replace(/\s+/g, '').replace(/^0x/i, '');
+        if (!cleaned) return '';
+        if (!/^[0-9a-f]+$/i.test(cleaned) || cleaned.length % 2 !== 0) {
+          throw new Error('payloadBytesHex invalide.');
+        }
+        return cleaned.toLowerCase();
+      };
+      const hexContainsNullByte = (hex) => (String(hex || '').match(/../g) || []).includes('00');
+      const hexToLatin1String = (hex) => Buffer.from(hex, 'hex').toString('latin1');
+      const normalizeTraceInputMeta = (input, fallbackMode = 'payload_builder') => {
+        const source = input && typeof input === 'object' ? input : {};
+        const requestedMode = String(source.mode || fallbackMode || 'payload_builder').trim().toLowerCase();
+        const mode = requestedMode === 'simple' || requestedMode === 'python'
+          ? 'payload_builder'
+          : (['payload_builder', 'file', 'exploit_helper', 'pwntools_script'].includes(requestedMode) ? requestedMode : fallbackMode);
+        return {
+          mode,
+          template: String(source.template || source.sourceFields?.template || '').trim(),
+          targetMode: source.targetMode ? normalizePayloadTargetMode(source.targetMode) : '',
+          payloadBytesHex: normalizeInputHex(source.payloadBytesHex || ''),
+          sourceFields: source.sourceFields && typeof source.sourceFields === 'object' ? source.sourceFields : {},
+          generatedSnippet: String(source.generatedSnippet || ''),
+          size: Number.isFinite(Number(source.size)) ? Number(source.size) : 0,
+          previewHex: String(source.previewHex || '').trim(),
+          previewAscii: String(source.previewAscii || ''),
+          warnings: Array.isArray(source.warnings) ? source.warnings.map(String) : [],
+          sourceFileName: String(source.sourceFileName || source.sourceFields?.sourceFileName || '').trim(),
+          selectedCaptureKind: String(source.selectedCaptureKind || source.sourceFields?.selectedCaptureKind || '').trim(),
+          target: String(source.target || source.sourceFields?.target || '').trim(),
+          builderLevel: String(source.builderLevel || source.sourceFields?.builderLevel || (requestedMode === 'python' ? 'advanced' : 'beginner')).trim(),
+        };
+      };
+      const stageDynamicInputFile = (fileSpec) => {
+        const file = fileSpec && typeof fileSpec === 'object' ? fileSpec : null;
+        if (!file) return null;
+        const source = file.source === 'path' ? 'path' : 'inline';
+        const guestPath = String(file.guestPath || '/tmp/pof-input.txt').trim() || '/tmp/pof-input.txt';
+        const passAs = file.passAs === 'argv1' ? 'argv1' : 'argv1';
+        let hostPath = '';
+        if (source === 'path') {
+          hostPath = resolvePathFromWorkspace(String(file.hostPath || '').trim());
+          if (!hostPath || !fs.existsSync(hostPath)) throw new Error(`Fichier payload introuvable: ${hostPath}`);
+        } else {
+          const dir = ensureTempDir(root);
+          hostPath = path.join(dir, `dynamic-input-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
+          fs.writeFileSync(hostPath, String(file.inlineContent || ''), 'utf8');
+        }
+        return { source, guestPath, hostPath, passAs };
+      };
       const sanitizeArtifactToken = (value, fallback = 'item') => {
         const text = String(value || '').trim();
         const safe = text.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/_+/g, '_');
@@ -1218,13 +1313,7 @@ function createHub(config) {
         ])
       );
 
-      const buildRunTraceInit = async (
-        forcedBinaryPath = '',
-        preset = null,
-        forcedSourcePath = '',
-        payloadTargetMode = 'auto',
-        sourcePathExplicitlyCleared = false
-      ) => {
+      const buildRunTraceInit = async (forcedBinaryPath = '', preset = null, forcedSourcePath = '', payloadTargetMode = 'auto') => {
         const requestedPayloadTargetMode = normalizePayloadTargetMode(preset?.payloadTargetMode || payloadTargetMode);
         const latestTrace = loadLatestTrace();
         const traceBinary = String(latestTrace?.meta?.binary || '').trim();
@@ -1301,11 +1390,13 @@ function createHub(config) {
           ...(typeof preset?.payloadExpr === 'string' ? { argvPayload: preset.payloadExpr } : {})
         };
 
+        const inferredSourcePath = inferSourcePathForBinary(absoluteBinaryPath);
         const selectedSourcePath = String(
           forcedSourcePath
           || preset?.sourcePath
-          || (sourcePathExplicitlyCleared ? '' : sameBinaryTrace?.meta?.source)
-          || (sourcePathExplicitlyCleared ? '' : sameBinaryTrace?.meta?.source_enrichment?.sourcePath)
+          || sameBinaryTrace?.meta?.source
+          || sameBinaryTrace?.meta?.source_enrichment?.sourcePath
+          || inferredSourcePath
           || ''
         ).trim();
         const payloadTargetPreview = buildPayloadTargetPreview({
@@ -1316,9 +1407,9 @@ function createHub(config) {
         return {
           binaryPath: toWebviewPath(absoluteBinaryPath),
           sourcePath: selectedSourcePath,
-          sourceEnrichmentEnabled: !sourcePathExplicitlyCleared && sameBinaryTrace?.meta?.source_enrichment?.enabled === true,
-          sourceEnrichmentStatus: sourcePathExplicitlyCleared ? '' : String(sameBinaryTrace?.meta?.source_enrichment?.status || '').trim(),
-          sourceEnrichmentMessage: sourcePathExplicitlyCleared ? '' : String(sameBinaryTrace?.meta?.source_enrichment?.message || '').trim(),
+          sourceEnrichmentEnabled: sameBinaryTrace?.meta?.source_enrichment?.enabled === true,
+          sourceEnrichmentStatus: String(sameBinaryTrace?.meta?.source_enrichment?.status || '').trim(),
+          sourceEnrichmentMessage: String(sameBinaryTrace?.meta?.source_enrichment?.message || '').trim(),
           ...payloadTargetPreview,
           archBits,
           pie: inferPie(info, sameBinaryTrace),
@@ -1615,6 +1706,13 @@ function createHub(config) {
         if (setSidebarMode) setSidebarMode(message.mode || 'other');
         return;
       }
+      if (message.type === 'hubDebugLog') {
+        const scope = String(message.scope || 'webview').replace(/[^a-z0-9_-]/gi, '_');
+        const event = String(message.event || 'event').replace(/[^a-z0-9_.:-]/gi, '_');
+        const details = message.details && typeof message.details === 'object' ? message.details : {};
+        logChannel.appendLine(`[${scope}] ${event} ${JSON.stringify(details)}`);
+        return;
+      }
       if (message.type === 'hubInstallDecompiler') {
         const tool = message.tool || '';
         const platform = process.platform;
@@ -1628,23 +1726,12 @@ function createHub(config) {
 
         const LABELS = {
           ghidra: 'Ghidra headless',
-          retdec: 'retdec',
-          angr: 'angr',
         };
         const INSTALL_LINES = {
           ghidra: [
             'macOS :  brew install ghidra && brew install openjdk@21',
             'Windows: winget install NationalSecurityAgency.Ghidra && winget install EclipseAdoptium.Temurin.21.JDK',
             'Linux  :  téléchargement manuel → https://ghidra-sre.org',
-          ],
-          retdec: [
-            'macOS :  brew install retdec',
-            'Linux  :  sudo apt install retdec',
-          ],
-          angr: [
-            'macOS :  python3 -m pip install angr',
-            'Linux  :  python3 -m pip install angr',
-            'Windows: py -m pip install angr',
           ],
         };
 
@@ -1661,11 +1748,6 @@ function createHub(config) {
         if (tool === 'ghidra') {
           if (platform === 'darwin') installCmd = 'brew install ghidra && brew install openjdk@21';
           else if (platform === 'win32') installCmd = 'winget install NationalSecurityAgency.Ghidra && winget install EclipseAdoptium.Temurin.21.JDK';
-        } else if (tool === 'retdec') {
-          if (platform === 'darwin') installCmd = 'brew install retdec';
-          else if (pm === 'apt') installCmd = 'sudo apt install retdec';
-        } else if (tool === 'angr') {
-          installCmd = platform === 'win32' ? 'py -m pip install angr' : 'python3 -m pip install angr';
         }
 
         if (!installCmd && !LABELS[tool]) {
@@ -2574,6 +2656,107 @@ function createHub(config) {
         return;
       }
 
+      if (message.type === 'hubLoadPwntoolsScript') {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectFiles: true,
+          canSelectMany: false,
+          filters: { 'Python': ['py'] },
+          title: 'Importer un script pwntools',
+          defaultUri: vscode.Uri.file(root),
+        });
+        if (picked && picked[0]) {
+          const filePath = picked[0].fsPath;
+          const content = fs.readFileSync(filePath, 'utf8');
+          panel.webview.postMessage({
+            type: 'hubPwntoolsScriptLoaded',
+            content,
+            path: filePath,
+            name: path.basename(filePath),
+          });
+        }
+        return;
+      }
+
+      if (message.type === 'hubAnalyzePwntoolsScript') {
+        const scriptContent = String(message.scriptContent || '');
+        const sourceFileName = String(message.sourceFileName || 'payload.py').trim() || 'payload.py';
+        const scriptPathRaw = String(message.scriptPath || '').trim();
+        const binaryPathRaw = String(message.binaryPath || '').trim();
+        const resolvedScriptPath = scriptPathRaw ? resolvePathFromWorkspace(scriptPathRaw) : '';
+        const resolvedBinaryPath = binaryPathRaw ? resolvePathFromWorkspace(binaryPathRaw) : '';
+        const scriptRoot = resolvedScriptPath
+          ? path.dirname(resolvedScriptPath)
+          : (resolvedBinaryPath ? path.dirname(resolvedBinaryPath) : root);
+        if (!scriptContent.trim()) {
+          panel.webview.postMessage({
+            type: 'hubPwntoolsScriptAnalyzed',
+            result: {
+              ok: false,
+              sourceFileName,
+              captures: [],
+              captured: [],
+              globals: {},
+              processes: [],
+              warnings: ['Script pwntools requis.'],
+              error: 'Le script pwntools est vide.',
+              stdout: '',
+              stderr: '',
+            }
+          });
+          return;
+        }
+        const tempDir = ensureTempDir(root);
+        const nonce = crypto.randomBytes(6).toString('hex');
+        const tempScriptPath = path.join(tempDir, `pwntools-script-${nonce}.py`);
+        fs.writeFileSync(tempScriptPath, scriptContent, 'utf8');
+        let result = null;
+        try {
+          result = await runPythonJsonFile(
+            [
+              getPayloadScriptRunnerScript(root),
+              '--script-file',
+              tempScriptPath,
+              '--source-name',
+              sourceFileName,
+              '--script-root',
+              scriptRoot,
+              '--timeout-seconds',
+              '2.0',
+              ...(resolvedBinaryPath ? ['--script-arg', resolvedBinaryPath] : []),
+            ],
+            {
+              timeout: 3000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+        } catch (err) {
+          result = {
+            ok: false,
+            sourceFileName,
+            captures: [],
+            captured: [],
+            globals: {},
+            processes: [],
+            warnings: ['Analyse du script pwntools impossible.'],
+            error: String(err?.stderr || err?.stdout || err?.message || err || 'Erreur inconnue'),
+            stdout: String(err?.stdout || ''),
+            stderr: String(err?.stderr || ''),
+          };
+        } finally {
+          try {
+            if (fs.existsSync(tempScriptPath)) fs.unlinkSync(tempScriptPath);
+          } catch (_) {
+            // ignore temp cleanup failures
+          }
+        }
+        const capturesCount = Array.isArray(result?.captures)
+          ? result.captures.length
+          : (Array.isArray(result?.captured) ? result.captured.length : 0);
+        logChannel.appendLine(`[payload] pwntools analysis source=${sourceFileName} ok=${result?.ok !== false} captures=${capturesCount}`);
+        panel.webview.postMessage({ type: 'hubPwntoolsScriptAnalyzed', result });
+        return;
+      }
+
       if (message.type === 'hubPickFile') {
         const isBinaryTarget = ['bindiffPathA', 'bindiffPathB', 'funcSimilarityRef'].includes(message.target);
         const isSourceTarget = message.fileType === 'sourceC' || message.target === 'dynamicSourcePath';
@@ -2606,8 +2789,7 @@ function createHub(config) {
           message.binaryPath || '',
           message.preset || null,
           message.sourcePath || '',
-          message.payloadTargetMode || 'auto',
-          message.sourcePathExplicitlyCleared === true
+          message.payloadTargetMode || 'auto'
         );
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         return;
@@ -2664,8 +2846,7 @@ function createHub(config) {
           message.binaryPath || '',
           null,
           message.sourcePath || '',
-          message.payloadTargetMode || 'auto',
-          message.sourcePathExplicitlyCleared === true
+          message.payloadTargetMode || 'auto'
         );
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         return;
@@ -2682,13 +2863,7 @@ function createHub(config) {
         const binaryPath = binaryUri[0].fsPath;
         const pathForWebview = toWebviewPath(binaryPath);
         panel.webview.postMessage({ type: 'hubSetBinaryPath', binaryPath: pathForWebview });
-        const initPayload = await buildRunTraceInit(
-          pathForWebview,
-          null,
-          message.sourcePath || '',
-          message.payloadTargetMode || 'auto',
-          message.sourcePathExplicitlyCleared === true
-        );
+        const initPayload = await buildRunTraceInit(pathForWebview, null, message.sourcePath || '', message.payloadTargetMode || 'auto');
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         if (refreshSidebar) refreshSidebar(pathForWebview);
         return;
@@ -2806,20 +2981,34 @@ function createHub(config) {
           startSymbol = normalizeStartSymbolForBinary(startSymbol, binaryInfoForSymbols);
 
           const payloadExprRaw = String(payload.payloadExpr || '').trim();
+          const inputMeta = normalizeTraceInputMeta(payload.input || null, 'payload_builder');
+          const stagedInputFile = inputMeta.mode === 'file'
+            ? stageDynamicInputFile(payload.file || payload.input?.file || null)
+            : null;
+          if (inputMeta.mode === 'file' && !stagedInputFile) {
+            throw new Error('Configuration fichier payload manquante.');
+          }
           const payloadTargetMode = normalizePayloadTargetMode(
-            payload.payloadTargetMode || payload.payloadTarget || 'auto'
+            inputMeta.targetMode || payload.payloadTargetMode || payload.payloadTarget || 'auto'
           );
+          const effectiveSourcePath = sourcePath || inferSourcePathForBinary(binaryOutPath);
           const payloadTargetResolution = resolvePayloadTarget({
             mode: payloadTargetMode,
-            sourceText: readSourceTextForPayloadTarget(sourcePath)
+            sourceText: readSourceTextForPayloadTarget(effectiveSourcePath)
           });
-          const payloadTarget = payloadTargetResolution.target;
-          const injectPayload = payloadExprRaw.length > 0 && (payload.injectPayload === true || payload.injectPayload === undefined);
+          const payloadTarget = stagedInputFile ? 'argv1' : payloadTargetResolution.target;
+          const inputPayloadHex = inputMeta.payloadBytesHex;
+          const injectPayload = !stagedInputFile
+            && ((payloadExprRaw.length > 0 || inputPayloadHex.length > 0)
+              && (payload.injectPayload === true || payload.injectPayload === undefined));
           const injectStdin = injectPayload && (payloadTarget === 'stdin' || payloadTarget === 'both');
           const injectArgv = injectPayload && (payloadTarget === 'argv1' || payloadTarget === 'both');
           let payloadString = '';
           let payloadHex = '';
-          if (injectPayload && payloadExprRaw) {
+          if (injectPayload && inputPayloadHex) {
+            payloadHex = inputPayloadHex;
+            payloadString = hexToLatin1String(payloadHex);
+          } else if (injectPayload && payloadExprRaw) {
             try {
               payloadString = normalizePayloadExpression(payloadExprRaw);
               payloadHex = typeof payloadToHex === 'function' ? payloadToHex(payloadExprRaw) : '';
@@ -2828,6 +3017,11 @@ function createHub(config) {
               return;
             }
           }
+          if (injectArgv && payloadHex && hexContainsNullByte(payloadHex)) {
+            vscode.window.showErrorMessage('Payload invalide pour argv[1]: contient un octet NUL. Utilisez stdin ou Fichier.');
+            return;
+          }
+          logChannel.appendLine(`[payload] runTrace mode=${stagedInputFile ? 'file' : inputMeta.mode} target=${payloadTarget} inject=${injectPayload} size=${payloadHex ? payloadHex.length / 2 : payloadString.length} hex=${payloadHex ? payloadHex.slice(0, 160) : ''}`);
 
           const pythonArgs = [
             getRunPipelineScript(root),
@@ -2841,7 +3035,12 @@ function createHub(config) {
             '--max-steps', maxSteps
           ];
           if (injectStdin && payloadHex) pythonArgs.push('--stdin-hex', payloadHex);
-          if (injectArgv) pythonArgs.push('--argv1', payloadString);
+          if (injectArgv && payloadHex) pythonArgs.push('--argv1-hex', payloadHex);
+          else if (injectArgv) pythonArgs.push('--argv1', payloadString);
+          if (stagedInputFile) {
+            pythonArgs.push('--argv1', stagedInputFile.guestPath);
+            pythonArgs.push('--virtual-file', `${stagedInputFile.guestPath}=${stagedInputFile.hostPath}`);
+          }
           if (!captureBinaryOnly) pythonArgs.push('--no-capture-binary');
           if (stopSymbol) pythonArgs.push('--stop-symbol', stopSymbol);
           if (useInterp) pythonArgs.push('--start-interp');
@@ -2858,7 +3057,7 @@ function createHub(config) {
           enrichTraceForVisualizer(trace, {
             jsonPath: isolatedJsonPath,
             traceRunId,
-            sourcePath,
+            sourcePath: effectiveSourcePath,
             archBits,
             viewMode: 'dynamic'
           });
@@ -2868,8 +3067,34 @@ function createHub(config) {
           trace.meta.payload_target_auto = payloadTargetResolution.autoTarget;
           trace.meta.payload_target_reason = payloadTargetResolution.reason;
           trace.meta.payload_label = payloadTargetLabel(payloadTarget);
-          trace.meta.payload_text = injectPayload ? payloadString : '';
+          trace.meta.payload_text = stagedInputFile ? stagedInputFile.guestPath : (injectPayload ? payloadString : '');
           trace.meta.payload_hex = injectPayload ? payloadHex : '';
+          const runtimeInputWarnings = Array.isArray(trace.meta.virtual_file_warnings)
+            ? trace.meta.virtual_file_warnings.map(String)
+            : [];
+          trace.meta.input = {
+            mode: stagedInputFile ? 'file' : inputMeta.mode,
+            template: inputMeta.template,
+            targetMode: payloadTargetMode,
+            sourceFileName: inputMeta.sourceFileName,
+            selectedCaptureKind: inputMeta.selectedCaptureKind,
+            target: inputMeta.target || payloadTarget,
+            builderLevel: inputMeta.builderLevel,
+            sourceFields: inputMeta.sourceFields,
+            generatedSnippet: inputMeta.generatedSnippet,
+            size: inputMeta.size || (payloadHex ? payloadHex.length / 2 : payloadString.length),
+            previewHex: inputMeta.previewHex || payloadHex,
+            previewAscii: inputMeta.previewAscii || payloadString,
+            warnings: [...inputMeta.warnings, ...runtimeInputWarnings],
+            ...(stagedInputFile ? {
+              file: {
+                source: stagedInputFile.source,
+                guestPath: stagedInputFile.guestPath,
+                hostPath: stagedInputFile.hostPath,
+                passAs: stagedInputFile.passAs,
+              }
+            } : {})
+          };
           writeTraceJson(isolatedJsonPath, trace);
           activeDynamicTracePath = isolatedJsonPath;
           writeTraceJson(canonicalJsonPath, trace);

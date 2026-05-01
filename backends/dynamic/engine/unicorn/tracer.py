@@ -29,6 +29,8 @@ try:
         UC_HOOK_INTR,
         UC_HOOK_MEM_READ,
         UC_HOOK_MEM_WRITE,
+        UC_HOOK_MEM_READ_UNMAPPED,
+        UC_HOOK_MEM_WRITE_UNMAPPED,
         UC_HOOK_MEM_FETCH_UNMAPPED,
         UC_PROT_ALL,
     )
@@ -121,6 +123,21 @@ def _copy_n_bytes(uc, src: int, dst: int, n: int) -> Optional[int]:
     return n
 
 
+def _virtual_alloc(uc, state: dict, size: int) -> Optional[int]:
+    if size <= 0:
+        return None
+    arch_bits = int(state.get("arch_bits", 64))
+    default_base = 0x60000000 if arch_bits == 32 else 0x600000000000
+    base = int(state.get("virtual_heap_next", 0) or default_base)
+    map_size = align_up(size, 0x1000)
+    try:
+        uc.mem_map(base, map_size, UC_PROT_ALL)
+    except UcError:
+        return None
+    state["virtual_heap_next"] = base + map_size
+    return base
+
+
 def _memset_bytes(uc, dst: int, value: int, n: int) -> Optional[int]:
     if dst == 0 or n < 0:
         return None
@@ -148,6 +165,18 @@ def _strlen_at(uc, src: int, max_len: int = 0x20000) -> Optional[int]:
     return None
 
 
+def _strcasecmp_at(uc, lhs: int, rhs: int) -> Optional[int]:
+    left = _read_c_string_from_memory(uc, lhs)
+    right = _read_c_string_from_memory(uc, rhs)
+    if left is None or right is None:
+        return None
+    a = left.lower()
+    b = right.lower()
+    if a == b:
+        return 0
+    return -1 if a < b else 1
+
+
 def _strcmp_at(
     uc, lhs: int, rhs: int, max_len: int = 0x20000, limit: Optional[int] = None
 ) -> Optional[int]:
@@ -170,23 +199,23 @@ def _strcmp_at(
     return None
 
 
-def _consume_stdin_bytes(state: dict, n: int) -> bytes:
+def _consume_stream_bytes(state: dict, data_key: str, pos_key: str, n: int) -> bytes:
     if n <= 0:
         return b""
-    data = state.get("stdin_data", b"")
-    pos = int(state.get("stdin_pos", 0))
+    data = state.get(data_key, b"")
+    pos = int(state.get(pos_key, 0))
     if pos >= len(data):
         return b""
     chunk = data[pos : pos + n]
-    state["stdin_pos"] = pos + len(chunk)
+    state[pos_key] = pos + len(chunk)
     return chunk
 
 
-def _consume_stdin_line(state: dict, max_len: int) -> bytes:
+def _consume_stream_line(state: dict, data_key: str, pos_key: str, max_len: int) -> bytes:
     if max_len <= 0:
         return b""
-    data = state.get("stdin_data", b"")
-    pos = int(state.get("stdin_pos", 0))
+    data = state.get(data_key, b"")
+    pos = int(state.get(pos_key, 0))
     if pos >= len(data):
         return b""
     end = min(len(data), pos + max_len)
@@ -194,8 +223,16 @@ def _consume_stdin_line(state: dict, max_len: int) -> bytes:
     nl = chunk.find(b"\n")
     if nl >= 0:
         chunk = chunk[: nl + 1]
-    state["stdin_pos"] = pos + len(chunk)
+    state[pos_key] = pos + len(chunk)
     return chunk
+
+
+def _consume_stdin_bytes(state: dict, n: int) -> bytes:
+    return _consume_stream_bytes(state, "stdin_data", "stdin_pos", n)
+
+
+def _consume_stdin_line(state: dict, max_len: int) -> bytes:
+    return _consume_stream_line(state, "stdin_data", "stdin_pos", max_len)
 
 
 def _read_c_string_from_memory(
@@ -210,41 +247,89 @@ def _read_c_string_from_memory(
     return raw.decode("utf-8", errors="replace")
 
 
-def _skip_stdin_whitespace(state: dict) -> int:
-    data = state.get("stdin_data", b"")
-    pos = int(state.get("stdin_pos", 0))
+def _skip_stream_whitespace(state: dict, data_key: str, pos_key: str) -> int:
+    data = state.get(data_key, b"")
+    pos = int(state.get(pos_key, 0))
     start = pos
     while pos < len(data) and chr(data[pos]).isspace():
         pos += 1
-    state["stdin_pos"] = pos
+    state[pos_key] = pos
     return pos - start
 
 
-def _consume_stdin_literal(state: dict, literal: str) -> bool:
-    data = state.get("stdin_data", b"")
-    pos = int(state.get("stdin_pos", 0))
+def _skip_stdin_whitespace(state: dict) -> int:
+    return _skip_stream_whitespace(state, "stdin_data", "stdin_pos")
+
+
+def _consume_stream_literal(
+    state: dict, data_key: str, pos_key: str, literal: str
+) -> bool:
+    data = state.get(data_key, b"")
+    pos = int(state.get(pos_key, 0))
     encoded = literal.encode("utf-8", errors="ignore")
     if not encoded:
         return False
     end = pos + len(encoded)
     if end > len(data) or data[pos:end] != encoded:
         return False
-    state["stdin_pos"] = end
+    state[pos_key] = end
     return True
 
 
-def _consume_stdin_token(state: dict, width: Optional[int] = None) -> bytes:
-    _skip_stdin_whitespace(state)
-    data = state.get("stdin_data", b"")
-    pos = int(state.get("stdin_pos", 0))
+def _consume_stdin_literal(state: dict, literal: str) -> bool:
+    return _consume_stream_literal(state, "stdin_data", "stdin_pos", literal)
+
+
+def _consume_stream_token(
+    state: dict,
+    data_key: str,
+    pos_key: str,
+    width: Optional[int] = None,
+    scanset: Optional[str] = None,
+) -> bytes:
+    _skip_stream_whitespace(state, data_key, pos_key)
+    data = state.get(data_key, b"")
+    pos = int(state.get(pos_key, 0))
     if pos >= len(data):
         return b""
     end = len(data) if width is None else min(len(data), pos + width)
     cursor = pos
-    while cursor < end and not chr(data[cursor]).isspace():
+    while cursor < end:
+        byte = data[cursor]
+        if scanset is not None:
+            if not _byte_matches_scanset(byte, scanset):
+                break
+        elif chr(byte).isspace():
+            break
         cursor += 1
-    state["stdin_pos"] = cursor
+    state[pos_key] = cursor
     return data[pos:cursor]
+
+
+def _consume_stdin_token(state: dict, width: Optional[int] = None) -> bytes:
+    return _consume_stream_token(state, "stdin_data", "stdin_pos", width)
+
+
+def _byte_matches_scanset(byte: int, scanset: str) -> bool:
+    if scanset == "":
+        return False
+    invert = scanset.startswith("^")
+    spec = scanset[1:] if invert else scanset
+    idx = 0
+    matched = False
+    while idx < len(spec):
+        ch = spec[idx]
+        if idx + 2 < len(spec) and spec[idx + 1] == "-":
+            start = ord(ch)
+            end = ord(spec[idx + 2])
+            if min(start, end) <= byte <= max(start, end):
+                matched = True
+            idx += 3
+            continue
+        if byte == ord(ch):
+            matched = True
+        idx += 1
+    return not matched if invert else matched
 
 
 def _iterate_scanf_tokens(fmt: str) -> List[dict]:
@@ -287,6 +372,28 @@ def _iterate_scanf_tokens(fmt: str) -> List[dict]:
 
         if idx >= len(fmt):
             break
+        if fmt[idx] == "[":
+            set_start = idx + 1
+            if set_start < len(fmt) and fmt[set_start] == "^":
+                set_start += 1
+            cursor = set_start
+            if cursor < len(fmt) and fmt[cursor] == "]":
+                cursor += 1
+            while cursor < len(fmt) and fmt[cursor] != "]":
+                cursor += 1
+            if cursor >= len(fmt):
+                break
+            tokens.append(
+                {
+                    "kind": "conversion",
+                    "value": "[",
+                    "width": width,
+                    "assign": assign,
+                    "scanset": fmt[idx + 1 : cursor],
+                }
+            )
+            idx = cursor + 1
+            continue
         tokens.append(
             {
                 "kind": "conversion",
@@ -304,6 +411,8 @@ def _simulate_scanf_call(
     arg_reader,
     state: dict,
     format_arg_index: int,
+    data_key: str = "stdin_data",
+    pos_key: str = "stdin_pos",
 ) -> Optional[int]:
     fmt_addr = arg_reader(format_arg_index)
     if fmt_addr is None:
@@ -319,11 +428,13 @@ def _simulate_scanf_call(
     for token in _iterate_scanf_tokens(fmt):
         kind = token.get("kind")
         if kind == "whitespace":
-            _skip_stdin_whitespace(state)
+            _skip_stream_whitespace(state, data_key, pos_key)
             continue
 
         if kind == "literal":
-            if not _consume_stdin_literal(state, str(token.get("value", ""))):
+            if not _consume_stream_literal(
+                state, data_key, pos_key, str(token.get("value", ""))
+            ):
                 break
             continue
 
@@ -334,11 +445,17 @@ def _simulate_scanf_call(
         width = token.get("width")
         assign = bool(token.get("assign", True))
 
-        if conv != "s":
+        if conv not in {"s", "["}:
             return None if not supported and assignments == 0 else assignments
 
         supported = True
-        chunk = _consume_stdin_token(state, width)
+        chunk = _consume_stream_token(
+            state,
+            data_key,
+            pos_key,
+            width,
+            str(token.get("scanset", "")) if conv == "[" else None,
+        )
         if not chunk:
             break
 
@@ -363,6 +480,130 @@ def _simulate_scanf_call(
 
 def _bytes_to_hex(data: bytes | bytearray | list[int]) -> str:
     return " ".join(f"{int(byte) & 0xFF:02x}" for byte in bytes(data))
+
+
+def _hex_opt(value: Optional[int]) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return hex(int(value))
+    except Exception:
+        return None
+
+
+def _read_register_dump(uc, arch_bits: int) -> dict[str, str]:
+    dump: dict[str, str] = {}
+    for name, reg_id in get_reg_order(arch_bits):
+        try:
+            dump[name] = hex(int(uc.reg_read(reg_id)))
+        except UcError:
+            continue
+    return dump
+
+
+def _read_snapshot_registers(snapshot: dict, stage: str = "after") -> dict[str, str]:
+    cpu = snapshot.get("cpu") if isinstance(snapshot, dict) else None
+    stage_payload = cpu.get(stage) if isinstance(cpu, dict) else None
+    registers = stage_payload.get("registers") if isinstance(stage_payload, dict) else None
+    return registers if isinstance(registers, dict) else {}
+
+
+def _build_crash_reason(kind: str, error: str, instruction_text: str = "") -> str:
+    instr = str(instruction_text or "").strip().lower()
+    if kind == "unmapped_read":
+        return "Lecture sur une adresse non mappee pendant l'execution."
+    if kind == "unmapped_write":
+        return "Ecriture sur une adresse non mappee pendant l'execution."
+    if kind == "unmapped_fetch":
+        if instr.startswith("ret"):
+            return "Retour vers une adresse non executable ou non mappee."
+        if instr.startswith("jmp") or instr.startswith("call"):
+            return "Saut vers une adresse non executable ou non mappee."
+        return "Execution sur une adresse non executable ou non mappee."
+    if "UC_ERR_FETCH_UNMAPPED" in error:
+        return "Execution sur une adresse non mappee."
+    if "UC_ERR_READ_UNMAPPED" in error:
+        return "Lecture sur une adresse non mappee."
+    if "UC_ERR_WRITE_UNMAPPED" in error:
+        return "Ecriture sur une adresse non mappee."
+    return f"Erreur Unicorn: {error}"
+
+
+def _finalize_crash_report(
+    collector,
+    uc,
+    arch_bits: int,
+    error: str,
+    state: Optional[dict] = None,
+) -> Optional[dict]:
+    crash_ctx = state.get("crash_context") if isinstance(state, dict) else None
+    last_snapshot = collector.snapshots[-1] if getattr(collector, "snapshots", None) else None
+    fallback_regs = _read_register_dump(uc, arch_bits)
+    snapshot_regs = _read_snapshot_registers(last_snapshot, "after") if isinstance(last_snapshot, dict) else {}
+    registers = dict(snapshot_regs or fallback_regs)
+    if not registers:
+        registers = fallback_regs
+    ip_name = "eip" if arch_bits == 32 else "rip"
+    sp_name = "esp" if arch_bits == 32 else "rsp"
+    bp_name = "ebp" if arch_bits == 32 else "rbp"
+    instruction_address = None
+    instruction_text = ""
+    if isinstance(last_snapshot, dict):
+        instruction_address = (
+            last_snapshot.get(ip_name)
+            or last_snapshot.get("eip")
+            or last_snapshot.get("rip")
+        )
+        instruction_text = str(last_snapshot.get("instr") or "").strip()
+    if not instruction_address:
+        instruction_address = registers.get(ip_name)
+    crash_type = str(
+        (crash_ctx or {}).get("type")
+        or ("unmapped_fetch" if "FETCH_UNMAPPED" in error else "unmapped_write" if "WRITE_UNMAPPED" in error else "unmapped_read" if "READ_UNMAPPED" in error else "runtime_error")
+    ).strip() or "runtime_error"
+    fault_address = (crash_ctx or {}).get("faultAddress")
+    if not fault_address and crash_type == "unmapped_fetch":
+        fault_address = registers.get(ip_name)
+    return {
+        "type": crash_type,
+        "step": int(getattr(collector, "step", 0) or 0),
+        "instructionAddress": str(instruction_address or ""),
+        "instructionText": instruction_text,
+        "registers": registers,
+        ip_name: registers.get(ip_name),
+        sp_name: registers.get(sp_name),
+        bp_name: registers.get(bp_name),
+        "faultAddress": fault_address,
+        "faultSize": (crash_ctx or {}).get("faultSize"),
+        "faultValue": (crash_ctx or {}).get("faultValue"),
+        "memoryAccess": (crash_ctx or {}).get("memoryAccess"),
+        "reason": _build_crash_reason(crash_type, error, instruction_text),
+        "unicornError": str(error or ""),
+    }
+
+
+def _record_crash_context(
+    state: dict,
+    kind: str,
+    uc_engine,
+    address: Optional[int] = None,
+    size: Optional[int] = None,
+    value: Optional[int] = None,
+) -> None:
+    if not isinstance(state, dict):
+        return
+    try:
+        pc = int(uc_engine.reg_read(state["pc_reg"]))
+    except Exception:
+        pc = None
+    state["crash_context"] = {
+        "type": kind,
+        "faultAddress": _hex_opt(address),
+        "faultSize": int(size) if isinstance(size, int) else None,
+        "faultValue": _hex_opt(value),
+        "memoryAccess": kind.replace("unmapped_", ""),
+        "pc": _hex_opt(pc),
+    }
 
 
 def _begin_external_event(
@@ -457,6 +698,58 @@ def _read_call_arg(
     return _read_word(uc, stack_base + (index * word_size), word_size)
 
 
+def _virtual_file_warnings(state: dict) -> list:
+    warnings = state.setdefault("virtual_file_warnings", [])
+    return warnings if isinstance(warnings, list) else []
+
+
+def _open_virtual_file(state: dict, guest_path: str) -> int:
+    files = state.get("virtual_files", {})
+    if guest_path not in files:
+        _virtual_file_warnings(state).append(
+            f"virtual file not declared: {guest_path}"
+        )
+        return 0
+    handles = state.setdefault("virtual_file_handles", {})
+    next_id = int(state.get("virtual_file_next_handle", 0xF1000000))
+    state["virtual_file_next_handle"] = next_id + 0x100
+    handles[next_id] = {
+        "path": guest_path,
+        "data": bytes(files[guest_path]),
+        "pos": 0,
+        "closed": False,
+    }
+    return next_id
+
+
+def _get_virtual_file_handle(state: dict, handle_id: Optional[int]) -> Optional[dict]:
+    if handle_id is None:
+        return None
+    handle = state.get("virtual_file_handles", {}).get(int(handle_id))
+    if not handle or handle.get("closed"):
+        return None
+    return handle
+
+
+def _simulate_virtual_fscanf(uc, arg_reader, state: dict) -> Optional[int]:
+    fp = arg_reader(0)
+    handle = _get_virtual_file_handle(state, fp)
+    if handle is None:
+        return None
+    state["file_data"] = bytes(handle.get("data", b""))
+    state["file_pos"] = int(handle.get("pos", 0))
+    assigned = _simulate_scanf_call(
+        uc,
+        arg_reader,
+        state,
+        format_arg_index=1,
+        data_key="file_data",
+        pos_key="file_pos",
+    )
+    handle["pos"] = int(state.get("file_pos", handle.get("pos", 0)))
+    return assigned
+
+
 def _simulate_symbol_with_args(
     uc,
     arch_bits: int,
@@ -475,6 +768,56 @@ def _simulate_symbol_with_args(
     def mark() -> None:
         per_symbol = state.setdefault("simulated_by_symbol", {})
         per_symbol[key] = int(per_symbol.get(key, 0)) + 1
+
+    if key in {"fopen"}:
+        path_addr = arg(0)
+        if path_addr is None:
+            return None
+        guest_path = _read_c_string_from_memory(uc, path_addr)
+        if guest_path is None:
+            return None
+        handle = _open_virtual_file(state, guest_path)
+        mark()
+        return handle
+
+    if key in {"fscanf"}:
+        assigned = _simulate_virtual_fscanf(uc, arg, state)
+        if assigned is None:
+            return None
+        mark()
+        return assigned
+
+    if key in {"fgetc"}:
+        handle = _get_virtual_file_handle(state, arg(0))
+        if handle is None:
+            return None
+        data = bytes(handle.get("data", b""))
+        pos = int(handle.get("pos", 0))
+        if pos >= len(data):
+            mark()
+            return -1
+        handle["pos"] = pos + 1
+        mark()
+        return data[pos]
+
+    if key in {"feof"}:
+        handle = _get_virtual_file_handle(state, arg(0))
+        if handle is None:
+            return None
+        mark()
+        return (
+            1
+            if int(handle.get("pos", 0)) >= len(bytes(handle.get("data", b"")))
+            else 0
+        )
+
+    if key in {"fclose"}:
+        handle = _get_virtual_file_handle(state, arg(0))
+        if handle is None:
+            return None
+        handle["closed"] = True
+        mark()
+        return 0
 
     if key in {"strcpy", "__strcpy_chk"}:
         dst, src = arg(0), arg(1)
@@ -579,6 +922,41 @@ def _simulate_symbol_with_args(
         mark()
         return dst
 
+    if key in {"strdup"}:
+        src = arg(0)
+        if src is None:
+            return None
+        size = _strlen_at(uc, src)
+        if size is None:
+            return None
+        dst = _virtual_alloc(uc, state, size + 1)
+        if dst is None:
+            return None
+        copied = _copy_c_string(uc, src, dst, max_len=size + 1)
+        if copied is None:
+            return None
+        _record_external_access(state, "reads", src, copied)
+        _record_external_access(
+            state,
+            "writes",
+            dst,
+            copied,
+            _safe_read_bytes(uc, dst, copied),
+        )
+        mark()
+        return dst
+
+    if key in {"atoi"}:
+        src = arg(0)
+        if src is None:
+            return None
+        text = _read_c_string_from_memory(uc, src)
+        if text is None:
+            return None
+        match = re.match(r"^\s*([+-]?\d+)", text)
+        mark()
+        return int(match.group(1), 10) if match else 0
+
     if key in {"strlen"}:
         src = arg(0)
         if src is None:
@@ -589,6 +967,16 @@ def _simulate_symbol_with_args(
         _record_external_access(state, "reads", src, n + 1)
         mark()
         return n
+
+    if key in {"strcasecmp"}:
+        lhs, rhs = arg(0), arg(1)
+        if lhs is None or rhs is None:
+            return None
+        cmp_val = _strcasecmp_at(uc, lhs, rhs)
+        if cmp_val is None:
+            return None
+        mark()
+        return cmp_val
 
     if key in {"strcmp"}:
         lhs, rhs = arg(0), arg(1)
@@ -796,7 +1184,18 @@ def _install_external_fetch_skip_hook(
             "simulated_by_symbol": dict(state.get("simulated_by_symbol", {})),
             "stdin_data": bytes(config.stdin_data),
             "stdin_pos": int(state.get("stdin_pos", 0)),
+            "virtual_files": {
+                str(path): bytes(data)
+                for path, data in (config.virtual_files or {}).items()
+            },
+            "virtual_file_handles": state.get("virtual_file_handles", {}),
+            "virtual_file_next_handle": int(
+                state.get("virtual_file_next_handle", 0xF1000000)
+            ),
+            "virtual_file_warnings": state.get("virtual_file_warnings", []),
+            "virtual_heap_next": int(state.get("virtual_heap_next", 0)),
             "events_by_addr": state.get("events_by_addr", {}),
+            "crash_context": state.get("crash_context"),
         }
     )
 
@@ -820,7 +1219,6 @@ def _install_external_fetch_skip_hook(
         try:
             sp = uc_engine.reg_read(user_data["sp_reg"])
             _begin_external_event(user_data, addr, symbol_name, target)
-            ret_value = 0
             simulated = _simulate_external_call_precall(
                 uc_engine,
                 user_data["arch_bits"],
@@ -829,10 +1227,12 @@ def _install_external_fetch_skip_hook(
                 user_data["word_size"],
                 user_data,
             )
-            if simulated is not None:
-                ret_value = simulated
-                if _symbol_key(symbol_name) in {"strcpy", "__strcpy_chk"}:
-                    user_data["simulated_strcpy"] += 1
+            if simulated is None:
+                user_data.pop("current_external_event", None)
+                return
+            ret_value = simulated
+            if _symbol_key(symbol_name) in {"strcpy", "__strcpy_chk"}:
+                user_data["simulated_strcpy"] += 1
 
             next_pc = (addr + size) & mask
             uc_engine.reg_write(user_data["ret_reg"], ret_value)
@@ -849,6 +1249,14 @@ def _install_external_fetch_skip_hook(
         try:
             sp = uc_engine.reg_read(user_data["sp_reg"])
         except UcError:
+            _record_crash_context(
+                user_data,
+                "unmapped_fetch",
+                uc_engine,
+                address=_address,
+                size=_size,
+                value=_value,
+            )
             return False
 
         ret_slot = _find_return_slot(
@@ -858,11 +1266,18 @@ def _install_external_fetch_skip_hook(
             user_data["capture_ranges"],
         )
         if ret_slot is None:
+            _record_crash_context(
+                user_data,
+                "unmapped_fetch",
+                uc_engine,
+                address=_address,
+                size=_size,
+                value=_value,
+            )
             return False
         ret_addr, ret_slot_addr = ret_slot
 
         try:
-            ret_value = 0
             call_target = _infer_call_target_from_return(
                 uc_engine,
                 ret_addr,
@@ -883,10 +1298,20 @@ def _install_external_fetch_skip_hook(
                 user_data["word_size"],
                 user_data,
             )
-            if simulated is not None:
-                ret_value = simulated
-                if _symbol_key(symbol_name) in {"strcpy", "__strcpy_chk"}:
-                    user_data["simulated_strcpy"] += 1
+            if simulated is None:
+                user_data.pop("current_external_event", None)
+                _record_crash_context(
+                    user_data,
+                    "unmapped_fetch",
+                    uc_engine,
+                    address=_address,
+                    size=_size,
+                    value=_value,
+                )
+                return False
+            ret_value = simulated
+            if _symbol_key(symbol_name) in {"strcpy", "__strcpy_chk"}:
+                user_data["simulated_strcpy"] += 1
 
             next_sp = ret_slot_addr + user_data["word_size"]
             uc_engine.reg_write(user_data["sp_reg"], next_sp)
@@ -894,14 +1319,51 @@ def _install_external_fetch_skip_hook(
             uc_engine.reg_write(user_data["ret_reg"], ret_value)
         except UcError:
             user_data.pop("current_external_event", None)
+            _record_crash_context(
+                user_data,
+                "unmapped_fetch",
+                uc_engine,
+                address=_address,
+                size=_size,
+                value=_value,
+            )
             return False
 
         user_data["skipped_external"] += 1
         _commit_external_event(user_data, True)
+        user_data["crash_context"] = None
         return True
+
+    def _hook_mem_read_unmapped(
+        uc_engine, _access, address, size, value, user_data
+    ):
+        _record_crash_context(
+            user_data,
+            "unmapped_read",
+            uc_engine,
+            address=address,
+            size=size,
+            value=value,
+        )
+        return False
+
+    def _hook_mem_write_unmapped(
+        uc_engine, _access, address, size, value, user_data
+    ):
+        _record_crash_context(
+            user_data,
+            "unmapped_write",
+            uc_engine,
+            address=address,
+            size=size,
+            value=value,
+        )
+        return False
 
     uc.hook_add(UC_HOOK_CODE, _hook_code_pre_call_skip, state)
     uc.hook_add(UC_HOOK_MEM_FETCH_UNMAPPED, _hook_mem_fetch_unmapped, state)
+    uc.hook_add(UC_HOOK_MEM_READ_UNMAPPED, _hook_mem_read_unmapped, state)
+    uc.hook_add(UC_HOOK_MEM_WRITE_UNMAPPED, _hook_mem_write_unmapped, state)
     return state
 
 
@@ -987,8 +1449,15 @@ def trace_raw(
             buffer_size=config.buffer_size,
             start_symbol=config.start_symbol,
             argv1=config.argv1,
+            argv1_data=config.argv1_data,
+            stop_symbol=config.stop_symbol,
+            capture_start_addr=config.capture_start_addr,
+            loader_max_steps=config.loader_max_steps,
+            capture_ranges=config.capture_ranges,
+            stop_addr=config.stop_addr,
             memory_patches=config.memory_patches,
             stack_payload=config.stack_payload,
+            virtual_files=config.virtual_files,
         )
     # Sélectionne le mode CPU Unicorn selon l'arch.
     mode = UC_MODE_64 if config.arch_bits == 64 else UC_MODE_32
@@ -1024,6 +1493,7 @@ def trace_raw(
             buffer_size=config.buffer_size,
             start_symbol=config.start_symbol,
             argv1=config.argv1,
+            argv1_data=config.argv1_data,
             stop_symbol=config.stop_symbol,
             capture_start_addr=config.capture_start_addr,
             loader_max_steps=config.loader_max_steps,
@@ -1031,6 +1501,7 @@ def trace_raw(
             stop_addr=config.stop_addr,
             memory_patches=config.memory_patches,
             stack_payload=config.stack_payload,
+            virtual_files=config.virtual_files,
         )
 
     # Mappe le code brut en mémoire.
@@ -1097,8 +1568,21 @@ def trace_raw(
     finally:
         collector.finalize_pending(uc)
 
+    crash = (
+        _finalize_crash_report(
+            collector,
+            uc,
+            config.arch_bits,
+            error,
+            external_skip_state,
+        )
+        if error
+        else None
+    )
+
     return {
         "snapshots": collector.snapshots,
+        "crash": crash,
         "meta": {
             "steps": collector.step,
             "error": error,
@@ -1115,6 +1599,9 @@ def trace_raw(
             "simulated_strcpy_calls": external_skip_state["simulated_strcpy"],
             "simulated_external_calls": external_skip_state.get(
                 "simulated_by_symbol", {}
+            ),
+            "virtual_file_warnings": external_skip_state.get(
+                "virtual_file_warnings", []
             ),
             "stop_addr": (
                 hex(config.stop_addr) if config.stop_addr is not None else None
@@ -1227,6 +1714,7 @@ def trace_elf(
         buffer_size=config.buffer_size,
         start_symbol=config.start_symbol,
         argv1=config.argv1,
+        argv1_data=config.argv1_data,
         stop_symbol=config.stop_symbol,
         capture_start_addr=config.capture_start_addr,
         loader_max_steps=config.loader_max_steps,
@@ -1236,6 +1724,7 @@ def trace_elf(
         stop_addr=config.stop_addr,
         memory_patches=config.memory_patches,
         stack_payload=config.stack_payload,
+        virtual_files=config.virtual_files,
     )
     if config.arch_bits == 32 and config.stack_base > 0xFFFFFFFF:
         # Ajuste la pile 32-bit si nécessaire.
@@ -1253,6 +1742,7 @@ def trace_elf(
             buffer_size=config.buffer_size,
             start_symbol=config.start_symbol,
             argv1=config.argv1,
+            argv1_data=config.argv1_data,
             stop_symbol=config.stop_symbol,
             capture_start_addr=config.capture_start_addr,
             loader_max_steps=config.loader_max_steps,
@@ -1260,6 +1750,7 @@ def trace_elf(
             stop_addr=config.stop_addr,
             memory_patches=config.memory_patches,
             stack_payload=config.stack_payload,
+            virtual_files=config.virtual_files,
         )
     # Initialise la pile et prépare argc/argv/auxv.
     init_stack(uc, config)
@@ -1277,7 +1768,9 @@ def trace_elf(
         auxv = [(k, 0 if k == 7 else v) for k, v in auxv]
     argv0 = binary_path or "a.out"
     argv = [argv0]
-    if config.argv1 is not None:
+    if config.argv1_data is not None:
+        argv.append(config.argv1_data)
+    elif config.argv1 is not None:
         argv.append(config.argv1)
     sp = build_initial_stack(uc, config, argv, [], auxv)
     main_word_size = 8 if config.arch_bits == 64 else 4
@@ -1361,10 +1854,23 @@ def trace_elf(
             try:
                 uc.emu_start(interp_entry, end_addr)
                 error = None
+                external_skip_state["crash_context"] = None
             except UcError as exc2:
                 error = str(exc2)
     finally:
         collector.finalize_pending(uc)
+
+    crash = (
+        _finalize_crash_report(
+            collector,
+            uc,
+            config.arch_bits,
+            error,
+            external_skip_state,
+        )
+        if error
+        else None
+    )
 
     # Enrichit snapshots avec file/line/func via addr2line si dispo.
     if binary_path and collector.snapshots and shutil.which("addr2line"):
@@ -1382,6 +1888,7 @@ def trace_elf(
 
     return {
         "snapshots": collector.snapshots,
+        "crash": crash,
         "meta": {
             "steps": collector.step,
             "error": error,
@@ -1407,6 +1914,9 @@ def trace_elf(
             "simulated_strcpy_calls": external_skip_state["simulated_strcpy"],
             "simulated_external_calls": external_skip_state.get(
                 "simulated_by_symbol", {}
+            ),
+            "virtual_file_warnings": external_skip_state.get(
+                "virtual_file_warnings", []
             ),
             "stop_addr": (
                 hex(config.stop_addr) if config.stop_addr is not None else None

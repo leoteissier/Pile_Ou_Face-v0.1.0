@@ -75,7 +75,7 @@ function sameFunction(left, right) {
   return Boolean(a && b && a === b);
 }
 
-function slotHumanLabel(slot, payloadText = '', payloadLabel = 'argv[1]') {
+function slotHumanLabel(slot, payloadText = '', payloadLabel = 'argv[1]', payloadHex = '') {
   const rawLabel = String(slot?.label || '').toLowerCase();
   const role = String(slot?.role || '').toLowerCase();
   if (rawLabel === 'argc') return 'copie locale de argc';
@@ -84,7 +84,7 @@ function slotHumanLabel(slot, payloadText = '', payloadLabel = 'argv[1]') {
   if (role === 'saved_bp') return 'ancienne base';
   if (role === 'return_address' || rawLabel.includes('ret')) return 'adresse de retour';
   if (role === 'buffer') return 'buffer local';
-  if (role === 'argument' && slotLooksLikePayload(slot, payloadText)) return `contenu de ${payloadLabel}`;
+  if (role === 'argument' && slotLooksLikePayload(slot, payloadText, payloadHex)) return `contenu de ${payloadLabel}`;
   if (role === 'argument') return 'zone argument';
   if (role === 'padding') return 'zone intermédiaire';
   if (role === 'unknown') return 'zone intermédiaire';
@@ -802,19 +802,35 @@ function payloadChunks(payloadText) {
   return [...out].filter(Boolean);
 }
 
-function slotLooksLikePayload(slot, payloadText = '') {
-  const haystack = slotText(slot);
-  if (!haystack) return false;
-  const chunks = payloadChunks(payloadText);
-  if (!chunks.length) {
-    return String(slot?.role || '').toLowerCase() === 'argument' && haystack.includes('arg_');
+function payloadHexChunks(payloadHex) {
+  const hex = String(payloadHex || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
+  if (hex.length < 8) return [];
+  const out = new Set();
+  out.add(hex.slice(0, Math.min(16, hex.length)));
+  out.add(hex.slice(Math.max(0, hex.length - 16)));
+  for (let index = 0; index <= hex.length - 8; index += 8) {
+    out.add(hex.slice(index, index + 8));
+    out.add(hex.slice(index, Math.min(index + 16, hex.length)));
   }
-  return chunks.some((chunk) => haystack.includes(chunk));
+  return [...out].filter(Boolean);
 }
 
-function findPayloadSlots(analysis, payloadText = '') {
+function slotLooksLikePayload(slot, payloadText = '', payloadHex = '') {
+  const haystack = slotText(slot);
+  const hexHaystack = String(slot?.bytesHex || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
+  if (!haystack && !hexHaystack) return false;
+  const chunks = payloadChunks(payloadText);
+  const hexChunks = payloadHexChunks(payloadHex);
+  if (!chunks.length && !hexChunks.length) {
+    return String(slot?.role || '').toLowerCase() === 'argument' && haystack.includes('arg_');
+  }
+  return chunks.some((chunk) => haystack.includes(chunk))
+    || hexChunks.some((chunk) => hexHaystack.includes(chunk));
+}
+
+function findPayloadSlots(analysis, payloadText = '', payloadHex = '') {
   const slots = Array.isArray(analysis?.frame?.slots) ? analysis.frame.slots : [];
-  return slots.filter((slot) => slotLooksLikePayload(slot, payloadText));
+  return slots.filter((slot) => slotLooksLikePayload(slot, payloadText, payloadHex));
 }
 
 function buildCurrentMessage(instructionAnalysis, model) {
@@ -883,6 +899,7 @@ function buildStackMessage(traceData, stepIndex, analysis, instructionAnalysis) 
 
 function buildPayloadMessage(traceData, analysis, instructionAnalysis) {
   const payloadText = String(traceData?.meta?.payload_text || traceData?.meta?.argv1 || '').trim();
+  const payloadHex = String(traceData?.meta?.payload_hex || traceData?.meta?.input?.previewHex || '').trim();
   const payloadLabel = String(traceData?.meta?.payload_label || (
     traceData?.meta?.payload_target === 'stdin'
       ? 'stdin'
@@ -890,7 +907,7 @@ function buildPayloadMessage(traceData, analysis, instructionAnalysis) {
         ? 'stdin + argv[1]'
         : 'argv[1]'
   ));
-  const payloadSlots = findPayloadSlots(analysis, payloadText);
+  const payloadSlots = findPayloadSlots(analysis, payloadText, payloadHex);
   const overflow = analysis?.overflow && typeof analysis.overflow === 'object' ? analysis.overflow : null;
   const copiedIntoFrame = payloadSlots.some((slot) => String(slot?.role || '').toLowerCase() !== 'argument');
 
@@ -921,7 +938,7 @@ function buildPayloadMessage(traceData, analysis, instructionAnalysis) {
       return `Le contenu de ${payloadLabel} est en train de se preparer pour la copie dans le buffer local.`;
     }
     const slot = payloadSlots[0];
-    const label = slotHumanLabel(slot, payloadText, payloadLabel);
+    const label = slotHumanLabel(slot, payloadText, payloadLabel, payloadHex);
     return payloadText
       ? `On retrouve encore des morceaux de ${payloadLabel} dans ${label}.`
       : `Le contenu injecte est visible dans ${label}.`;

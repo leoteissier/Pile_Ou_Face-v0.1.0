@@ -4,6 +4,7 @@
  * @details Registres, dump memoire, frame context, et risques.
  */
 import { dom } from './dom.js';
+import { diagnosticKindLabel, diagnosticRegisters } from './diagnostics.js';
 import { resolveStackAddress, toBytes, toHex } from './utils.js';
 
 function parseByteString(text) {
@@ -20,9 +21,10 @@ function parseByteString(text) {
  * @brief Rend la liste des registres.
  * @param registerItems Liste de registres.
  */
-export function renderRegisters(registerItems) {
+export function renderRegisters(registerItems, diagnostics = []) {
   if (!dom.registers) return;
   dom.registers.innerHTML = '';
+  const highlightedRegisters = diagnosticRegisters(diagnostics);
 
   // Empty-state.
   if (!Array.isArray(registerItems) || registerItems.length === 0) {
@@ -40,6 +42,12 @@ export function renderRegisters(registerItems) {
   sorted.forEach((reg) => {
     const row = document.createElement('div');
     row.className = 'register';
+    const regName = String(reg.name || '').trim().toLowerCase();
+    const diagnostic = highlightedRegisters.get(regName);
+    if (diagnostic) {
+      row.classList.add('register-diagnostic', `register-diagnostic-${diagnostic.severity || 'warning'}`);
+      row.title = `${diagnosticKindLabel(diagnostic.kind)}: ${diagnostic.message || ''}`.trim();
+    }
 
     row.innerHTML = `
       <span class="register-name">${reg.name ?? '?'}</span>

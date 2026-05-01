@@ -4,6 +4,7 @@
  * @details Construit les blocs, roles, legendaire et repere RBP.
  */
 import { dom } from './dom.js';
+import { diagnosticsForStackSlot } from './diagnostics.js';
 import { addrKey, readPointer, readU32, toBigIntAddr } from './memory.js';
 import { buildSimplifiedStackViewModel } from './stackSimpleModel.js';
 import { buildStackWorkspaceModel } from './stackWorkspaceModel.js';
@@ -64,6 +65,7 @@ export function renderStack(stackItems, regMap, meta, options = {}) {
 
   // Resolve addresses and display context.
   const analysis = options.analysis && typeof options.analysis === 'object' ? options.analysis : null;
+  const diagnostics = Array.isArray(options.diagnostics) ? options.diagnostics : [];
   const mcp = options.mcp && typeof options.mcp === 'object' ? options.mcp : null;
   const model = mcp?.model && Array.isArray(mcp.model.locals) ? mcp.model : null;
   const analysisStackRoles = analysis?.highlights?.stack?.rolesByAddr ?? {};
@@ -74,6 +76,7 @@ export function renderStack(stackItems, regMap, meta, options = {}) {
   const analysisSavedBpAddr = toBigIntAddr(analysis?.control?.savedBpAddr);
   const analysisRetAddrAddr = toBigIntAddr(analysis?.control?.retAddrAddr);
   const payloadText = String(options.payloadText || '').trim();
+  const payloadHex = String(options.payloadHex || '').trim();
   const savedBpAddr = analysisSavedBpAddr ?? rbp;
   const retAddrAddr = analysisRetAddrAddr ?? (rbp != null ? rbp + wordSize : null);
   const spName = is64 ? 'RSP' : 'ESP';
@@ -130,7 +133,9 @@ export function renderStack(stackItems, regMap, meta, options = {}) {
     bufferEnd,
     analysisStackRoles,
     modelRegions,
+    diagnostics,
     payloadText,
+    payloadHex,
     spName,
     bpName
   });
@@ -143,6 +148,7 @@ export function renderStack(stackItems, regMap, meta, options = {}) {
     selectedSlotKey: options.selectedSlotKey,
     snapshot: options.snapshot,
     analysis,
+    diagnostics,
     mcp
   });
   updateStackWorkspaceChrome(workspaceModel, {
@@ -181,7 +187,9 @@ export function renderStack(stackItems, regMap, meta, options = {}) {
     bufferEnd,
     analysisStackRoles,
     modelRegions,
+    diagnostics,
     payloadText,
+    payloadHex,
     spName,
     bpName
   });
@@ -225,7 +233,9 @@ function renderAdvancedStack(sorted, context) {
     bufferEnd,
     analysisStackRoles,
     modelRegions,
+    diagnostics,
     payloadText,
+    payloadHex,
     spName,
     bpName
   } = context;
@@ -296,11 +306,21 @@ function renderAdvancedStack(sorted, context) {
     const role = options.abstractMode
       ? 'default'
       : resolveSemanticRole(item, addr, rbp, retAddrAddr, bufferStart, bufferEnd, analysisStackRoles, modelRegions);
+    const itemDiagnostics = diagnosticsForStackSlot(diagnostics, {
+      addressLabel: addr !== null ? toHex(addr) : '',
+      kind: role
+    });
+    const corruptedByDiagnostic = itemDiagnostics.some((diagnostic) => (
+      diagnostic.kind === 'return_address_corrupted'
+      || diagnostic.kind === 'saved_bp_corrupted'
+      || (diagnostic.kind === 'runtime_crash' && ['return_address', 'saved_bp'].includes(String(diagnostic.slot?.kind || '').toLowerCase()))
+      || (diagnostic.kind === 'invalid_control_flow' && diagnostic.slot?.kind === 'return_address')
+    ));
     const visualRole = toVisualRole(role);
     const roleConfig = ROLE_CONFIG[visualRole] || ROLE_CONFIG.default;
     div.className = `block ${roleConfig.className}`;
     if (item.changed || (options.changedKeys && options.changedKeys.has(itemKey))) div.classList.add('block-changed');
-    if (Array.isArray(item.flags) && item.flags.includes('corrupted')) div.classList.add('block-corrupted');
+    if (corruptedByDiagnostic) div.classList.add('block-corrupted');
     if (Array.isArray(item.flags) && item.flags.includes('recent_write')) div.classList.add('block-write');
     if (Array.isArray(item.flags) && item.flags.includes('recent_read')) div.classList.add('block-read');
     div.title = buildItemTooltip(item, visualRole);
@@ -308,15 +328,16 @@ function renderAdvancedStack(sorted, context) {
     const addrLabel = addr !== null ? toHex(addr) : '??';
     const posValue = item.pos ?? item.posi ?? null;
     const displayName = item.label ?? item.name ?? modelRegion?.name ?? (item.id !== undefined ? `#${item.id}` : '#?');
-    const subtitleText = buildHumanSubtitle(item, visualRole, payloadText, modelRegion);
+    const subtitleText = buildHumanSubtitle(item, visualRole, payloadText, payloadHex, modelRegion);
     const offsets = buildOffsets(item, addr, rsp, rbp, posValue, spName, bpName);
     const modifiedOk = visualRole === 'modified' && isModifiedMatch(item.value);
-    const payloadRelated = isPayloadRelatedItem(item, visualRole, payloadText);
+    const payloadRelated = isPayloadRelatedItem(item, visualRole, payloadText, payloadHex);
     if (modifiedOk) div.classList.add('role-modified-ok');
     if (payloadRelated) {
       div.classList.add('block-payload');
       if (!tags.includes('PAYLOAD')) tags.push('PAYLOAD');
     }
+    if (corruptedByDiagnostic && !tags.includes('CORROMPU')) tags.push('CORROMPU');
 
     const header = document.createElement('div');
     header.className = 'block-header';
@@ -520,6 +541,10 @@ function renderFrameWorkspace(frameModel, { selectedSlotKey, onSelectSlotKey } =
       slot.kind === 'return_address' ? 'is-return' : '',
       slot.kind === 'saved_bp' ? 'is-base' : '',
       slot.isSensitive ? 'is-sensitive' : '',
+      slot.diagnosticCorrupted ? 'is-corrupted' : '',
+      slot.diagnosticSeverity ? `has-diagnostic-${slot.diagnosticSeverity}` : '',
+      Array.isArray(slot.diagnostics) && slot.diagnostics.length ? 'has-diagnostic' : '',
+      isExpanded ? 'is-expanded' : '',
       isExpanded ? 'is-selected' : ''
     ].filter(Boolean).join(' ');
     button.setAttribute('aria-pressed', isExpanded ? 'true' : 'false');
@@ -562,6 +587,7 @@ function renderFrameWorkspace(frameModel, { selectedSlotKey, onSelectSlotKey } =
 
     summary.appendChild(side);
     button.appendChild(summary);
+    button.appendChild(renderInlineFrameDetails(slot, isExpanded));
 
     if (typeof onSelectSlotKey === 'function') {
       button.addEventListener('click', () => onSelectSlotKey(isExpanded ? null : selectionKey));
@@ -592,7 +618,8 @@ function buildFrameSlotTooltip(slot) {
     slot?.title || slot?.name,
     slot?.subtitle || slot?.offsetLabel,
     slot?.kind,
-    slot?.address
+    slot?.address,
+    slot?.diagnostic?.message
   ].filter(Boolean).join(' • ');
 }
 
@@ -1196,7 +1223,7 @@ function buildItemTooltip(item, visualRole) {
   return parts.filter(Boolean).join(' • ');
 }
 
-function buildHumanSubtitle(item, visualRole, payloadText, modelRegion) {
+function buildHumanSubtitle(item, visualRole, payloadText, payloadHex, modelRegion) {
   const rawLabel = String(item.label ?? item.name ?? modelRegion?.name ?? '').toLowerCase();
   const modelName = String(modelRegion?.name || '').toLowerCase();
   const semanticRole = normalizeRoleName(item.semanticRole ?? item.role ?? item.kind ?? visualRole);
@@ -1208,7 +1235,7 @@ function buildHumanSubtitle(item, visualRole, payloadText, modelRegion) {
   if (semanticRole === 'saved_bp' || rawLabel.includes('saved')) return 'saved_bp';
   if (semanticRole === 'return_address' || visualRole === 'ret' || rawLabel.includes('ret')) return 'ret_addr';
   if (visualRole === 'buffer') return 'buffer';
-  if ((semanticRole === 'argument' || visualRole === 'arg') && itemContainsPayload(item, payloadText)) return 'argument';
+  if ((semanticRole === 'argument' || visualRole === 'arg') && itemContainsPayload(item, payloadText, payloadHex)) return 'argument';
   if (semanticRole === 'argument' || visualRole === 'arg') return 'argument';
   if (visualRole === 'padding' || visualRole === 'unknown') return 'intermediate';
   if (visualRole === 'local') return 'local';
@@ -1229,7 +1256,20 @@ function payloadChunks(payloadText) {
   return [...chunks].filter(Boolean);
 }
 
-function itemContainsPayload(item, payloadText) {
+function payloadHexChunks(payloadHex) {
+  const hex = String(payloadHex || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
+  if (hex.length < 8) return [];
+  const chunks = new Set();
+  chunks.add(hex.slice(0, Math.min(16, hex.length)));
+  chunks.add(hex.slice(Math.max(0, hex.length - 16)));
+  for (let index = 0; index <= hex.length - 8; index += 8) {
+    chunks.add(hex.slice(index, index + 8));
+    chunks.add(hex.slice(index, Math.min(index + 16, hex.length)));
+  }
+  return [...chunks].filter(Boolean);
+}
+
+function itemContainsPayload(item, payloadText, payloadHex = '') {
   const haystack = [
     item.valueDisplay,
     item.ascii,
@@ -1239,16 +1279,19 @@ function itemContainsPayload(item, payloadText) {
     .map((part) => String(part || ''))
     .join(' ')
     .toLowerCase();
+  const hexHaystack = String(item.bytesHex || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
   if (!haystack) return false;
   const chunks = payloadChunks(payloadText);
-  if (!chunks.length) {
+  const hexChunks = payloadHexChunks(payloadHex);
+  if (!chunks.length && !hexChunks.length) {
     return haystack.includes('arg_') && haystack.includes('"');
   }
-  return chunks.some((chunk) => haystack.includes(chunk));
+  return chunks.some((chunk) => haystack.includes(chunk))
+    || hexChunks.some((chunk) => hexHaystack.includes(chunk));
 }
 
-function isPayloadRelatedItem(item, visualRole, payloadText) {
-  if (itemContainsPayload(item, payloadText)) return true;
+function isPayloadRelatedItem(item, visualRole, payloadText, payloadHex = '') {
+  if (itemContainsPayload(item, payloadText, payloadHex)) return true;
   return visualRole === 'buffer' && Array.isArray(item.flags) && item.flags.includes('ascii_probable');
 }
 
@@ -1491,7 +1534,9 @@ function buildSimpleSourceItems(sorted, context) {
     bufferEnd,
     analysisStackRoles,
     modelRegions,
+    diagnostics = [],
     payloadText,
+    payloadHex,
     spName,
     bpName
   } = context;
@@ -1527,6 +1572,18 @@ function buildSimpleSourceItems(sorted, context) {
     const offsets = buildOffsets(item, addr, rsp, rbp, posValue, spName, bpName);
     const displayName = item.label ?? item.name ?? modelRegion?.name ?? (item.id !== undefined ? `#${item.id}` : '#?');
     const rawValue = item.valueDisplay ?? item.value ?? item.bytesHex ?? '??';
+    const itemDiagnostics = diagnosticsForStackSlot(diagnostics, {
+      addressLabel: addr !== null ? toHex(addr) : '',
+      kind: semanticRole
+    });
+    const diagnosticFlags = itemDiagnostics.some((diagnostic) => (
+      diagnostic.kind === 'return_address_corrupted'
+      || diagnostic.kind === 'saved_bp_corrupted'
+      || (diagnostic.kind === 'runtime_crash' && ['return_address', 'saved_bp'].includes(String(diagnostic.slot?.kind || '').toLowerCase()))
+      || (diagnostic.kind === 'invalid_control_flow' && diagnostic.slot?.kind === 'return_address')
+    ))
+      ? ['corrupted']
+      : [];
 
     items.push({
       key,
@@ -1557,12 +1614,13 @@ function buildSimpleSourceItems(sorted, context) {
         : null,
       offsetFromSpLabel: offsets.find((offset) => offset.text.startsWith(`${spName} `))?.text ?? '',
       positionLabel: options.abstractMode ? (posValue !== null ? `Pos ${posValue}` : 'Pos ?') : '',
-      flags: Array.isArray(item.flags) ? item.flags : [],
+      flags: [...(Array.isArray(item.flags) ? item.flags : []), ...diagnosticFlags],
+      diagnostics: itemDiagnostics,
       comment: item.comment ?? '',
       changed: Boolean(item.changed),
       recentWrite: Boolean(item.recentWrite),
       recentRead: Boolean(item.recentRead),
-      payloadRelated: isPayloadRelatedItem(item, visualRole, payloadText),
+      payloadRelated: isPayloadRelatedItem(item, visualRole, payloadText, payloadHex),
       isAtSp: !options.abstractMode && addr !== null && rsp !== null && addr === rsp,
       isAtBp: !options.abstractMode && addr !== null && rbp !== null && addr === rbp,
       pointerKind: item.pointerKind ?? '',

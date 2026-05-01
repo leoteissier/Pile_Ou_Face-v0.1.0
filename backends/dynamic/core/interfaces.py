@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Protocol, Sequence, Tuple, Union, runtime_checkable
+from typing import Mapping, Optional, Protocol, Sequence, Tuple, Union, runtime_checkable
 
 from .types import TraceResult
 
@@ -24,6 +24,7 @@ class TraceConfigLike(Protocol):
     buffer_size: int
     start_symbol: Optional[str]
     argv1: Optional[str]
+    argv1_data: Optional[bytes]
     stop_symbol: Optional[str]
     capture_start_addr: Optional[int]
     loader_max_steps: Optional[int]
@@ -31,6 +32,7 @@ class TraceConfigLike(Protocol):
     stop_addr: Optional[int]
     memory_patches: Optional[Sequence[Tuple[int, int, Union[int, bytes]]]]
     stack_payload: Optional[Tuple[int, bytes]]
+    virtual_files: Optional[Mapping[str, bytes]]
 
 
 @runtime_checkable

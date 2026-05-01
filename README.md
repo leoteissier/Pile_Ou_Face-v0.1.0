@@ -57,7 +57,7 @@ Pile ou Face analyse des binaires ELF, PE et Mach-O (x86, x64, ARM64) directemen
 ### Prérequis
 
 - **Node.js** 18+
-- **Python** 3.11+
+- **Python** 3.8+
 - **git**
 
 Support **Windows, macOS et Linux**. Détails : [docs/PLATFORMS.md](docs/PLATFORMS.md).

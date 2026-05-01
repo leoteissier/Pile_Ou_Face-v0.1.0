@@ -3,6 +3,13 @@
  * Les tests peuvent muter cet objet pour configurer le comportement.
  */
 
+class RelativePattern {
+  constructor(base, pattern) {
+    this.base = base;
+    this.pattern = pattern;
+  }
+}
+
 class EventEmitter {
   constructor() {
     this._listeners = [];
@@ -27,10 +34,19 @@ const outputChannel = {
   show: noop,
 };
 
+const fileSystemWatcher = {
+  onDidChange: () => ({ dispose: noop }),
+  onDidCreate: () => ({ dispose: noop }),
+  onDidDelete: () => ({ dispose: noop }),
+  dispose: noop,
+};
+
 const mock = {
   EventEmitter,
+  RelativePattern,
   workspace: {
     workspaceFolders: undefined,
+    createFileSystemWatcher: () => fileSystemWatcher,
   },
   window: {
     showErrorMessage: noop,

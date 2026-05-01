@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from backends.dynamic.pipeline.stack_model import (
     _guess_buffer_region,
+    _overflow_summary,
     build_dynamic_analysis,
 )
 
@@ -57,7 +58,7 @@ class TestDynamicStackModel(unittest.TestCase):
         rsp = 0x0FB8
         window_start = 0x0FB8
         buffer_start = 0x0FC0
-        write_size = 72
+        write_size = 80
         payload = b"A" * write_size
         window = bytearray(b"\x00" * 0x60)
         write_offset = buffer_start - window_start
@@ -247,6 +248,38 @@ class TestDynamicStackModel(unittest.TestCase):
         self.assertEqual(leave_step["control"]["savedBpAddr"], hex(ebp))
         self.assertEqual(leave_step["control"]["retAddrAddr"], hex(ebp + word))
         self.assertEqual(leave_step["control"]["retValue"], "0x43434343")
+
+    def test_overflow_summary_ignores_control_flags_without_crossing_write(self):
+        analysis = {
+            "buffer": {
+                "name": "buffer",
+                "start": "0xfc0",
+                "end": "0x1000",
+                "size": 64,
+            },
+            "control": {
+                "savedBpAddr": "0x1000",
+                "retAddrAddr": "0x1008",
+            },
+            "frame": {
+                "slots": [
+                    {"role": "buffer", "start": "0xfc0", "end": "0x1000", "recentWrite": True, "changed": True},
+                    {"role": "saved_bp", "start": "0x1000", "end": "0x1008", "corrupted": True},
+                    {"role": "return_address", "start": "0x1008", "end": "0x1010", "corrupted": True},
+                ]
+            },
+            "delta": {
+                "writes": [
+                    {"addr": "0xfc0", "size": 25, "bytes": _hex_bytes(b"A" * 25)}
+                ]
+            },
+        }
+
+        overflow = _overflow_summary(analysis)
+
+        self.assertIsNotNone(overflow)
+        self.assertFalse(overflow["active"])
+        self.assertEqual(overflow["progressBytes"], 0)
 
 
 if __name__ == "__main__":

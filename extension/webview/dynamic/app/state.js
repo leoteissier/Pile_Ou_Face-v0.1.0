@@ -10,6 +10,8 @@ export const state = {
   traceRunId: null,
   snapshots: [],
   risks: [],
+  diagnostics: [],
+  crash: null,
   meta: {},
   disasmLines: [],
   disasmFileText: '',

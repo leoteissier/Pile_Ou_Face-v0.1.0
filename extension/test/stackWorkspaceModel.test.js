@@ -1805,6 +1805,83 @@ describe('stackWorkspaceModel', () => {
     expect(labels).to.not.include('Texte du slot');
   });
 
+  it('does not present a raw scalar payload suffix as a pointer and keeps the byte-oriented hex view', () => {
+    const baseArgs = {
+      slots: [
+        {
+          key: 'saved',
+          technicalLabel: 'saved_ebp',
+          semanticRole: 'saved_bp',
+          size: 4,
+          offsetFromBp: 0,
+          offsetFromBpLabel: 'EBP +0x0',
+          addressLabel: '0xbff1ff50',
+          displayValue: '0xbff1ff68',
+          source: 'control'
+        },
+        {
+          key: 'ret',
+          technicalLabel: 'ret_addr',
+          semanticRole: 'return_address',
+          size: 4,
+          offsetFromBp: 4,
+          offsetFromBpLabel: 'EBP +0x4',
+          addressLabel: '0xbff1ff54',
+          displayValue: '0x80491f0',
+          pointerKind: 'code',
+          source: 'control'
+        },
+        {
+          key: 'payload-tail',
+          technicalLabel: 'modified',
+          semanticRole: 'local',
+          size: 4,
+          offsetFromBp: -4,
+          offsetFromBpLabel: 'EBP -0x4',
+          addressLabel: '0xbff1ff4c',
+          displayValue: '0xefbeadde',
+          rawValue: '0xefbeadde',
+          bytesHex: 'de ad be ef',
+          source: 'auto'
+        }
+      ],
+      snapshots: [{ step: 1, func: 'main' }],
+      meta: {
+        arch_bits: 32,
+        binary: 'examples/rootme1.elf'
+      },
+      currentStep: 1,
+      selectedFunction: 'main',
+      snapshot: { func: 'main' },
+      analysis: {
+        frame: {
+          frameSize: 64,
+          basePointer: '0xbff1ff50',
+          stackPointer: '0xbff1ff1c'
+        },
+        control: {
+          savedBpAddr: '0xbff1ff50',
+          retAddrAddr: '0xbff1ff54'
+        }
+      }
+    };
+
+    const preview = buildStackWorkspaceModel(baseArgs);
+    const selected = preview.frameModel.entries.find((entry) => entry.offsetLabel === 'ebp-0x4');
+    const workspace = buildStackWorkspaceModel({
+      ...baseArgs,
+      selectedSlotKey: selected.key
+    });
+
+    const rows = workspace.detailModel.rows;
+    const labels = rows.map((row) => row.label);
+    expect(labels).to.include('Valeur du slot');
+    expect(labels).to.include('Hex');
+    expect(labels).to.not.include('Pointeur');
+    expect(labels).to.not.include('Memoire pointee');
+    expect(rows.find((row) => row.label === 'Hex').value).to.equal('de ad be ef');
+  });
+
   it('keeps main compact at a call site even when visible memory contains sink frame offsets', () => {
     const workspace = buildMainCallSiteWorkspace();
 
@@ -2306,5 +2383,137 @@ describe('stackWorkspaceModel', () => {
     expect(workspace.frameModel.entries[0].debug.mergedObservationCount).to.equal(1);
     expect(workspace.frameModel.debug.items[0].name).to.equal('argc');
     expect(workspace.frameModel.debug.seeds.some((seed) => seed.stage === 'control')).to.equal(true);
+  });
+
+  it('keeps source-backed simple frames focused on C variables and control slots', () => {
+    const workspace = buildStackWorkspaceModel({
+      slots: [
+        {
+          key: 'call-arg',
+          technicalLabel: 'stack_44h',
+          semanticRole: 'unknown',
+          size: 4,
+          offsetFromBp: -68,
+          offsetFromBpLabel: 'EBP -0x44',
+          addressLabel: '0xbff1fe74',
+          displayValue: '0x2d',
+          source: 'heuristic'
+        },
+        {
+          key: 'buf-start',
+          technicalLabel: 'var_34',
+          semanticRole: 'local',
+          size: 4,
+          offsetFromBp: -52,
+          offsetFromBpLabel: 'EBP -0x34',
+          addressLabel: '0xbff1fe84',
+          displayValue: '"AAAA"',
+          source: 'auto'
+        },
+        {
+          key: 'buf-tail',
+          technicalLabel: 'stack_30h',
+          semanticRole: 'unknown',
+          size: 36,
+          offsetFromBp: -48,
+          offsetFromBpLabel: 'EBP -0x30',
+          addressLabel: '0xbff1fe88',
+          displayValue: '"AAAAAAAA"',
+          source: 'heuristic'
+        },
+        {
+          key: 'check',
+          technicalLabel: 'var_c',
+          semanticRole: 'local',
+          size: 4,
+          offsetFromBp: -12,
+          offsetFromBpLabel: 'EBP -0xc',
+          addressLabel: '0xbff1feac',
+          displayValue: '0xdeadbeef',
+          source: 'auto'
+        },
+        {
+          key: 'saved-ecx',
+          technicalLabel: 'var_8',
+          semanticRole: 'local',
+          size: 4,
+          offsetFromBp: -8,
+          offsetFromBpLabel: 'EBP -0x8',
+          addressLabel: '0xbff1feb0',
+          displayValue: '0xbff1ff00',
+          source: 'auto'
+        },
+        {
+          key: 'saved-ebx',
+          technicalLabel: 'stack_4h',
+          semanticRole: 'unknown',
+          size: 4,
+          offsetFromBp: -4,
+          offsetFromBpLabel: 'EBP -0x4',
+          addressLabel: '0xbff1feb4',
+          displayValue: '0x0',
+          source: 'heuristic'
+        },
+        {
+          key: 'saved-ebp',
+          technicalLabel: 'saved_ebp',
+          semanticRole: 'saved_bp',
+          size: 4,
+          offsetFromBp: 0,
+          offsetFromBpLabel: 'EBP +0x0',
+          addressLabel: '0xbff1feb8',
+          displayValue: '0xbff1fffc',
+          source: 'control'
+        },
+        {
+          key: 'ret',
+          technicalLabel: 'ret_addr',
+          semanticRole: 'return_address',
+          size: 4,
+          offsetFromBp: 4,
+          offsetFromBpLabel: 'EBP +0x4',
+          addressLabel: '0xbff1febc',
+          displayValue: '0x8049000',
+          source: 'control'
+        }
+      ],
+      snapshots: [{ step: 14, func: 'main' }],
+      meta: { arch_bits: 32 },
+      currentStep: 14,
+      selectedFunction: 'main',
+      snapshot: { func: 'main' },
+      analysis: {
+        frame: {
+          frameSize: 80,
+          basePointer: '0xbff1feb8',
+          stackPointer: '0xbff1fe74'
+        },
+        control: {
+          savedBpAddr: '0xbff1feb8',
+          retAddrAddr: '0xbff1febc'
+        }
+      },
+      mcp: {
+        model: {
+          name: 'main',
+          sourceFunction: { name: 'main', returnType: 'int' },
+          locals: [
+            { name: 'saved ebx', offset: -4, size: 4, role: 'padding', confidence: 0.94 },
+            { name: 'saved ecx', offset: -8, size: 4, role: 'padding', confidence: 0.94 },
+            { name: 'check', offset: -12, size: 4, role: 'local', cType: 'int', source: 'source_c', confidence: 0.93 },
+            { name: 'buf', offset: -52, size: 40, role: 'buffer', cType: 'char[40]', source: 'source_c', confidence: 0.93 }
+          ]
+        }
+      }
+    });
+
+    expect(summarizeEntries(workspace)).to.deep.equal([
+      { name: 'argv', kind: 'argument', offset: 12, size: 4 },
+      { name: 'argc', kind: 'argument', offset: 8, size: 4 },
+      { name: 'return address', kind: 'return_address', offset: 4, size: 4 },
+      { name: 'saved ebp', kind: 'saved_bp', offset: 0, size: 4 },
+      { name: 'check', kind: 'local', offset: -12, size: 4 },
+      { name: 'buf', kind: 'buffer', offset: -52, size: 40 }
+    ]);
   });
 });

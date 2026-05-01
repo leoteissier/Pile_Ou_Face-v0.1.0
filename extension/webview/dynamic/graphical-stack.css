@@ -302,6 +302,17 @@ body.dynamic-view {
   overflow-wrap: anywhere;
 }
 
+.explain-section-error {
+  border-color: rgba(219, 110, 110, 0.56);
+  background: rgba(219, 110, 110, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(219, 110, 110, 0.12);
+}
+
+.explain-section-warning {
+  border-color: rgba(211, 179, 90, 0.46);
+  background: rgba(211, 179, 90, 0.1);
+}
+
 /* ==========================================================================
    Disassembly
    ========================================================================== */
@@ -354,6 +365,18 @@ body.dynamic-view {
   background: rgba(210, 188, 64, 0.16);
   border-color: rgba(210, 188, 64, 0.36);
   box-shadow: inset 0 0 0 1px rgba(210, 188, 64, 0.16);
+}
+
+.disasm-diagnostic-responsible {
+  background: rgba(230, 150, 76, 0.14);
+  border-color: rgba(230, 150, 76, 0.42);
+  box-shadow: inset 3px 0 0 rgba(230, 150, 76, 0.72);
+}
+
+.disasm-diagnostic-crash {
+  background: rgba(219, 110, 110, 0.16);
+  border-color: rgba(219, 110, 110, 0.58);
+  box-shadow: inset 3px 0 0 rgba(219, 110, 110, 0.82);
 }
 
 .disasm-jump-target {
@@ -759,6 +782,17 @@ body.dynamic-view {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
 }
 
+.frame-slot.is-corrupted {
+  border-color: rgba(219, 110, 110, 0.68);
+  background: rgba(219, 110, 110, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(219, 110, 110, 0.22);
+}
+
+.frame-slot.has-diagnostic-warning:not(.is-corrupted) {
+  border-color: rgba(211, 179, 90, 0.48);
+  box-shadow: inset 0 0 0 1px rgba(211, 179, 90, 0.16);
+}
+
 .frame-slot.is-selected {
   border-color: rgba(109, 166, 255, 0.28);
   box-shadow: inset 0 0 0 1px rgba(109, 166, 255, 0.12), 0 8px 20px rgba(0, 0, 0, 0.16);
@@ -821,6 +855,11 @@ body.dynamic-view {
   font-size: 0.64rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.frame-slot.is-corrupted .frame-slot-badge:first-child {
+  background: rgba(219, 110, 110, 0.2);
+  color: #ffd7d7;
 }
 
 .frame-slot-chevron {
@@ -1332,6 +1371,16 @@ body.dynamic-view {
   border-radius: 10px;
   font-size: 0.82rem;
   font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+
+.register-diagnostic {
+  border-color: rgba(211, 179, 90, 0.44);
+  background: rgba(211, 179, 90, 0.1);
+}
+
+.register-diagnostic-error {
+  border-color: rgba(219, 110, 110, 0.6);
+  background: rgba(219, 110, 110, 0.12);
 }
 
 .register-name {

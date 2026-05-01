@@ -14,6 +14,7 @@ import {
   resolveDisasmJumpTarget,
   scrollDisasmToFileLine
 } from './disasmPanel.js';
+import { diagnosticsForStep, mergeCrashDiagnostic } from './diagnostics.js';
 import { buildRegisterMap } from './utils.js';
 
 const vscode = acquireVsCodeApi();
@@ -636,6 +637,8 @@ window.addEventListener('message', (event) => {
       : String(msg.traceRunId);
     state.snapshots = Array.isArray(msg.snapshots) ? msg.snapshots : [];
     state.risks = Array.isArray(msg.risks) ? msg.risks : [];
+    state.diagnostics = Array.isArray(msg.diagnostics) ? msg.diagnostics : [];
+    state.crash = msg.crash && typeof msg.crash === 'object' ? msg.crash : null;
     state.meta = msg.meta && typeof msg.meta === 'object' ? msg.meta : {};
     state.disasmLines = Array.isArray(state.meta.disasm) ? state.meta.disasm : [];
     state.disasmFileText = '';
@@ -751,6 +754,17 @@ function updateUI(options = {}) {
   );
   const analysis = getScopedAnalysisForStep(state.currentStep, snap, expectedFunction);
   const mcp = getScopedMcpForStep(state.currentStep, snap, expectedFunction);
+  const currentCrash = state.crash && Number(state.crash.step) === Number(state.currentStep)
+    ? state.crash
+    : null;
+  const topLevelDiagnostics = diagnosticsForStep(state.diagnostics, state.currentStep);
+  const currentDiagnostics = mergeCrashDiagnostic(
+    topLevelDiagnostics.length
+      ? topLevelDiagnostics
+      : (Array.isArray(analysis?.diagnostics) ? analysis.diagnostics : []),
+    currentCrash,
+    state.currentStep
+  );
   state.analysis = analysis;
   state.mcp.analysis = mcp?.analysis ?? null;
   state.mcp.explanation = mcp?.explanation ?? null;
@@ -778,6 +792,7 @@ function updateUI(options = {}) {
     abstractMode: state.simStackMode,
     displayMode: state.stackViewMode,
     analysis,
+    diagnostics: currentDiagnostics,
     mcp,
     snapshot: snap,
     snapshots: state.snapshots,
@@ -787,6 +802,7 @@ function updateUI(options = {}) {
     memoryMap: state.memoryMap,
     debugMemory: state.debugMemory,
     payloadText: state.meta?.payload_text || state.meta?.argv1 || '',
+    payloadHex: state.meta?.payload_hex || state.meta?.input?.previewHex || '',
     onSelectFunction: (functionName) => {
       setSelectedFunction(functionName);
     },
@@ -808,17 +824,18 @@ function updateUI(options = {}) {
   if ((stackWorkspace?.selectedSlotKey || null) !== (state.selectedStackSlotKey || null)) {
     state.selectedStackSlotKey = stackWorkspace?.selectedSlotKey || null;
   }
-  renderRegisters(registerItems);
+  renderRegisters(registerItems, currentDiagnostics);
   renderRisks(state.risks, line);
   renderMemoryDump(state.simStackMode ? [] : stackItems, regMap, state.meta, snap);
-  renderExplain(snap, prevSnap, regMap, prevRegMap, state.meta, analysis, mcp);
+  renderExplain(snap, prevSnap, regMap, prevRegMap, state.meta, analysis, mcp, currentDiagnostics, currentCrash);
   renderDisasmPanel(disasmRender.entries, activeDisasmLine, {
     functionName: state.showAllTrace && snap.func
       ? displayFunctionName(snap.func)
       : displayFunctionName(state.selectedFunction || snap.func),
     functionHeaders: disasmRender.functionHeaders,
     callSiteHints,
-    callTargetHints
+    callTargetHints,
+    diagnostics: currentDiagnostics
   });
 
   if (!state.simStackMode && requestAnalysis) {

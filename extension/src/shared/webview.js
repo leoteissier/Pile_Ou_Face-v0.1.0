@@ -42,6 +42,8 @@ function getHubContent(webview, extensionUri, initialPanel = 'dashboard') {
 
   const scriptUri      = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'hub.js'));
   const cfgHelpersUri  = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'shared', 'cfgHelpers.js'));
+  const exploitHelperUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'shared', 'exploitHelper.js'));
+  const payloadPreviewUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'shared', 'payloadPreview.js'));
   const elkUri         = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'shared', 'elk.bundled.js'));
   const baseCssUri     = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'base.css'));
   const dashboardCssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'shared', 'panel-dashboard.css'));
@@ -54,6 +56,8 @@ function getHubContent(webview, extensionUri, initialPanel = 'dashboard') {
   return html
     .replace(/{{scriptUri}}/g, scriptUri.toString())
     .replace(/{{cfgHelpersUri}}/g, cfgHelpersUri.toString())
+    .replace(/{{exploitHelperUri}}/g, exploitHelperUri.toString())
+    .replace(/{{payloadPreviewUri}}/g, payloadPreviewUri.toString())
     .replace(/{{elkUri}}/g, elkUri.toString())
     .replace(/{{baseCssUri}}/g, baseCssUri.toString())
     .replace(/{{dashboardCssUri}}/g, dashboardCssUri.toString())

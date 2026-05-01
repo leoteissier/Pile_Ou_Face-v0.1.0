@@ -10,7 +10,7 @@
 @details Mappe la pile, aligne, et construit argv/env/auxv.
 """
 
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 from unicorn import UC_PROT_ALL
 from unicorn.x86_const import (
@@ -21,6 +21,13 @@ from unicorn.x86_const import (
 )
 
 from .config import TraceConfig
+
+
+def _stack_top_headroom(stack_size: int) -> int:
+    """Réserve une marge au-dessus du SP initial pour les gros overflows."""
+    if stack_size <= 0:
+        return 0
+    return max(0x1000, min(0x10000, stack_size // 4))
 
 
 def align_up(value: int, align: int) -> int:
@@ -41,7 +48,9 @@ def init_stack(uc, config: TraceConfig) -> int:
     # Mappe la zone pile et positionne SP/BP en haut de la pile.
     uc.mem_map(config.stack_base, config.stack_size, UC_PROT_ALL)
     word_size = 8 if config.arch_bits == 64 else 4
-    sp = config.stack_base + config.stack_size - word_size
+    stack_limit = config.stack_base + config.stack_size
+    headroom = _stack_top_headroom(config.stack_size)
+    sp = max(config.stack_base + word_size, stack_limit - headroom - word_size)
     if config.arch_bits == 64:
         uc.reg_write(UC_X86_REG_RSP, sp)
         uc.reg_write(UC_X86_REG_RBP, sp)
@@ -77,8 +86,8 @@ def inject_stack_payload(uc, sp: int, config: TraceConfig) -> None:
 def build_initial_stack(
     uc,
     config: TraceConfig,
-    argv: List[str],
-    env: List[str],
+    argv: List[Union[str, bytes]],
+    env: List[Union[str, bytes]],
     auxv: List[Tuple[int, int]],
 ) -> int:
     """@brief Construit un layout argc/argv/envp/auxv minimal.
@@ -91,7 +100,9 @@ def build_initial_stack(
     """
     # Construit un layout argc/argv/envp/auxv minimal (Linux ABI).
     word_size = 8 if config.arch_bits == 64 else 4
-    sp = config.stack_base + config.stack_size
+    stack_limit = config.stack_base + config.stack_size
+    headroom = _stack_top_headroom(config.stack_size)
+    sp = max(config.stack_base + word_size, stack_limit - headroom)
 
     def push_bytes(data: bytes) -> int:
         """@brief Pousse des bytes bruts sur la pile.
@@ -115,12 +126,14 @@ def build_initial_stack(
     # Place d'abord les chaînes et mémorise leurs pointeurs.
     env_ptrs: List[int] = []
     for item in reversed(env):
-        addr = push_bytes(item.encode("utf-8", errors="ignore") + b"\x00")
+        raw = item if isinstance(item, bytes) else item.encode("utf-8", errors="ignore")
+        addr = push_bytes(raw + b"\x00")
         env_ptrs.insert(0, addr)
 
     argv_ptrs: List[int] = []
     for item in reversed(argv):
-        addr = push_bytes(item.encode("utf-8", errors="ignore") + b"\x00")
+        raw = item if isinstance(item, bytes) else item.encode("utf-8", errors="ignore")
+        addr = push_bytes(raw + b"\x00")
         argv_ptrs.insert(0, addr)
 
     # Alignement avant les tables de pointeurs.

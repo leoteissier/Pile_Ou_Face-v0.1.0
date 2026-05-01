@@ -1,7 +1,7 @@
 const { expect } = require('chai');
 const sinon = require('sinon');
 const proxyquire = require('proxyquire').noCallThru();
-const { buildFunctionModel } = require('../src/dynamic/pedagogy');
+const { buildFunctionModel, findPayloadSlots, slotLooksLikePayload } = require('../src/dynamic/pedagogy');
 
 describe('dynamic visualizer', () => {
   let vscode;
@@ -39,6 +39,24 @@ describe('dynamic visualizer', () => {
 
   afterEach(() => {
     sinon.restore();
+  });
+
+  it('detects binary payload slots from payload_hex', () => {
+    const payloadHex = `${'41'.repeat(264)}64fff1bf4242424296910408`;
+    const analysis = {
+      frame: {
+        slots: [
+          { label: 'saved_ret', role: 'return_address', bytesHex: '64 ff f1 bf' },
+          { label: 'tail', role: 'unknown', bytesHex: '96 91 04 08' },
+          { label: 'other', role: 'unknown', bytesHex: '11 22 33 44' },
+        ],
+      },
+    };
+
+    expect(slotLooksLikePayload(analysis.frame.slots[0], '', payloadHex)).to.equal(true);
+    expect(slotLooksLikePayload(analysis.frame.slots[1], '', payloadHex)).to.equal(true);
+    expect(slotLooksLikePayload(analysis.frame.slots[2], '', payloadHex)).to.equal(false);
+    expect(findPayloadSlots(analysis, '', payloadHex).map((slot) => slot.label)).to.deep.equal(['saved_ret', 'tail']);
   });
 
   it('sends init with enriched meta and returns mcpUpdate on requestAnalysis', async () => {
@@ -238,5 +256,83 @@ describe('dynamic visualizer', () => {
     expect(bufferLocal.role).to.equal('buffer');
     expect(bufferLocal.offset).to.equal(-80);
     expect(bufferLocal.size).to.be.at.least(25);
+  });
+
+  it('prefers disassembly and source hints over stale buffer metadata for 32-bit stdin buffers', () => {
+    const trace = {
+      snapshots: [
+        { step: 1, instr: 'mov dword ptr [ebp - 0xc], 0x4030201', effects: {} },
+        { step: 2, instr: 'lea eax, [ebp - 0x34]', effects: {} },
+        { step: 3, instr: 'cmp dword ptr [ebp - 0xc], 0xdeadbeef', effects: {} }
+      ],
+      meta: {
+        view_mode: 'dynamic',
+        start_symbol: 'main',
+        arch_bits: 32,
+        word_size: 4,
+        buffer_offset: -64,
+        buffer_size: 64,
+        disasm: [
+          { addr: '0x80491b6', mnemonic: 'push', operands: 'ebp' },
+          { addr: '0x80491c1', mnemonic: 'mov', operands: 'ebp, esp' },
+          { addr: '0x80491c3', mnemonic: 'push', operands: 'ebx' },
+          { addr: '0x80491c4', mnemonic: 'push', operands: 'ecx' },
+          { addr: '0x80491c5', mnemonic: 'sub', operands: 'esp, 0x30' },
+          { addr: '0x80491c8', mnemonic: 'mov', operands: 'dword ptr [ebp - 0xc], 0x4030201' },
+          { addr: '0x80491da', mnemonic: 'lea', operands: 'eax, [ebp - 0x34]' },
+          { addr: '0x804920d', mnemonic: 'cmp', operands: 'dword ptr [ebp - 0xc], 0x4030201' },
+          { addr: '0x8049216', mnemonic: 'cmp', operands: 'dword ptr [ebp - 0xc], 0xdeadbeef' },
+          { addr: '0x8049286', mnemonic: 'lea', operands: 'esp, [ebp - 8]' }
+        ],
+        source_enrichment: {
+          enabled: true,
+          functions: [
+            {
+              name: 'main',
+              normalizedName: 'main',
+              returnType: 'int',
+              params: [],
+              locals: [
+                { name: 'var', cType: 'int', byteSize: 4, kind: 'local', order: 0 },
+                { name: 'check', cType: 'int', byteSize: 4, kind: 'local', order: 1 },
+                { name: 'buf', cType: 'char[40]', byteSize: 40, kind: 'buffer', order: 2 }
+              ]
+            }
+          ]
+        }
+      },
+      analysisByStep: {
+        '1': {
+          function: { name: 'main', addr: '0x80491b6', range_start: '0x80491b6', range_end: '0x8049290' },
+          frame: { slots: [] }
+        },
+        '2': {
+          function: { name: 'main', addr: '0x80491b6', range_start: '0x80491b6', range_end: '0x8049290' },
+          frame: {
+            slots: [
+              { label: 'local_buf_40h', role: 'buffer', size: 64, offsetFromBp: -64, confidence: 0.7, source: 'dynamic' },
+              { label: 'var_34', role: 'local', size: 4, offsetFromBp: -52, confidence: 0.7, source: 'auto' },
+              { label: 'var_c', role: 'local', size: 4, offsetFromBp: -12, confidence: 0.7, source: 'auto' }
+            ]
+          }
+        },
+        '3': {
+          function: { name: 'main', addr: '0x80491b6', range_start: '0x80491b6', range_end: '0x8049290' },
+          frame: { slots: [] }
+        }
+      }
+    };
+
+    const model = buildFunctionModel(trace, 'main');
+    const buf = model.locals.find((local) => local.name === 'buf');
+    const check = model.locals.find((local) => local.name === 'check');
+
+    expect(buf).to.include({ offset: -52, size: 40, role: 'buffer' });
+    expect(check).to.include({ offset: -12, size: 4, role: 'local' });
+    expect(model.locals.some((local) => local.name === 'var')).to.equal(false);
+    expect(model.locals.find((local) => local.offset === -8)).to.include({ name: 'saved ecx', role: 'padding', size: 4 });
+    expect(model.locals.find((local) => local.offset === -4)).to.include({ name: 'saved ebx', role: 'padding', size: 4 });
+    expect(model.locals.some((local) => local.offset === -64 && local.role === 'buffer')).to.equal(false);
+    expect(model.locals.some((local) => local.offset === -8 && local.role === 'buffer')).to.equal(false);
   });
 });

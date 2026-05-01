@@ -21,84 +21,89 @@ function backendDynamic(root, ...segments) {
   return path.join(root, 'backends', 'dynamic', ...segments);
 }
 
-/** backends/static/disasm.py — Désassemblage (objdump) */
+/** backends/static/disasm/disasm.py — Désassemblage */
 function getDisasmScript(root) {
-  return backendStatic(root, 'disasm.py');
+  return backendStatic(root, 'disasm/disasm.py');
 }
 
-/** backends/static/symbols.py — Extraction symboles (nm) */
+/** backends/static/binary/symbols.py — Extraction symboles */
 function getSymbolsScript(root) {
-  return backendStatic(root, 'symbols.py');
+  return backendStatic(root, 'binary/symbols.py');
 }
 
-/** backends/static/strings.py — Extraction strings */
+/** backends/static/search/strings.py — Extraction strings */
 function getStringsScript(root) {
-  return backendStatic(root, 'strings.py');
+  return backendStatic(root, 'search/strings.py');
 }
 
-/** backends/static/sections.py — Sections ELF/Mach-O */
+/** backends/static/binary/sections.py — Sections ELF/Mach-O */
 function getSectionsScript(root) {
-  return backendStatic(root, 'sections.py');
+  return backendStatic(root, 'binary/sections.py');
 }
 
-/** backends/static/headers.py — Headers binaire */
+/** backends/static/binary/headers.py — Headers binaire */
 function getHeadersScript(root) {
-  return backendStatic(root, 'headers.py');
+  return backendStatic(root, 'binary/headers.py');
 }
 
-/** backends/static/cfg.py — Control Flow Graph */
+/** backends/static/disasm/cfg.py — Control Flow Graph */
 function getCfgScript(root) {
-  return backendStatic(root, 'cfg.py');
+  return backendStatic(root, 'disasm/cfg.py');
 }
 
-/** backends/static/call_graph.py — Graphe d'appels */
+/** backends/static/disasm/call_graph.py — Graphe d'appels */
 function getCallGraphScript(root) {
-  return backendStatic(root, 'call_graph.py');
+  return backendStatic(root, 'disasm/call_graph.py');
 }
 
-/** backends/static/discover_functions.py — Découverte de fonctions */
+/** backends/static/disasm/discover_functions.py — Découverte de fonctions */
 function getDiscoverFunctionsScript(root) {
-  return backendStatic(root, 'discover_functions.py');
+  return backendStatic(root, 'disasm/discover_functions.py');
 }
 
-/** backends/static/search.py — Recherche binaire */
+/** backends/static/search/search.py — Recherche binaire */
 function getSearchScript(root) {
-  return backendStatic(root, 'search.py');
+  return backendStatic(root, 'search/search.py');
 }
 
-/** backends/static/offset_to_vaddr.py — Conversion offset fichier → adresse virtuelle */
+/** backends/static/binary/offset_to_vaddr.py — Conversion offset → adresse virtuelle */
 function getOffsetToVaddrScript(root) {
-  return backendStatic(root, 'offset_to_vaddr.py');
+  return backendStatic(root, 'binary/offset_to_vaddr.py');
 }
 
-/** backends/static/xrefs.py — Cross-références */
+/** backends/static/disasm/xrefs.py — Cross-références */
 function getXrefsScript(root) {
-  return backendStatic(root, 'xrefs.py');
+  return backendStatic(root, 'disasm/xrefs.py');
 }
 
-/** backends/static/yara_scan.py — Scan YARA */
+/** backends/static/search/yara_scan.py — Scan YARA */
 function getYaraScanScript(root) {
-  return backendStatic(root, 'yara_scan.py');
+  return backendStatic(root, 'search/yara_scan.py');
 }
 
-/** backends/static/capa_scan.py — Capa capabilities */
+/** backends/static/analysis/capa_scan.py — Capa capabilities */
 function getCapaScanScript(root) {
-  return backendStatic(root, 'capa_scan.py');
+  return backendStatic(root, 'analysis/capa_scan.py');
 }
 
-/** backends/static/rules_manager.py — Gestionnaire de règles YARA/CAPA */
+/** backends/static/rules/rules_manager.py — Gestionnaire de règles YARA/CAPA */
 function getRulesManagerScript(root) {
-  return backendStatic(root, 'rules_manager.py');
+  return backendStatic(root, 'rules/rules_manager.py');
 }
 
-/** backends/static/asm_sim.py — Simulation asm statique */
+/** backends/static/disasm/asm_sim.py — Simulation asm statique */
 function getAsmStaticScript(root) {
-  return backendStatic(root, 'asm_sim.py');
+  return backendStatic(root, 'disasm/asm_sim.py');
 }
 
 /** backends/dynamic/pipeline/run_pipeline.py — Pipeline dynamique */
 function getRunPipelineScript(root) {
   return backendDynamic(root, 'pipeline', 'run_pipeline.py');
+}
+
+/** backends/dynamic/pipeline/payload_script_runner.py — Extraction de payloads depuis un script pwntools */
+function getPayloadScriptRunnerScript(root) {
+  return backendDynamic(root, 'pipeline', 'payload_script_runner.py');
 }
 
 /** Chemins de fallback pour exemples (examples/foo.elf, foo.elf, etc.) */
@@ -128,5 +133,6 @@ module.exports = {
   getRulesManagerScript,
   getAsmStaticScript,
   getRunPipelineScript,
+  getPayloadScriptRunnerScript,
   getExampleCandidates,
 };

@@ -3,6 +3,7 @@
  * @brief Rendu du panneau ASM propre et recentre sur la fonction active.
  */
 import { dom } from './dom.js';
+import { diagnosticKindLabel, diagnosticMatchesAddress, primaryDiagnostic } from './diagnostics.js';
 
 function parseAddr(value) {
   if (typeof value === 'bigint') return value;
@@ -241,6 +242,7 @@ export function renderDisasmPanel(entries, activeLineNumber, options = {}) {
   const functionHeaders = options.functionHeaders && typeof options.functionHeaders === 'object'
     ? options.functionHeaders
     : {};
+  const diagnostics = Array.isArray(options.diagnostics) ? options.diagnostics : [];
   const appendHeader = (normalized, fallbackName = '') => {
     const name = functionHeaders[normalized.addrText] || fallbackName;
     if (!name || !normalized.headerAddrText) return;
@@ -261,6 +263,18 @@ export function renderDisasmPanel(entries, activeLineNumber, options = {}) {
     const row = document.createElement('div');
     row.className = 'disasm-raw-line';
     row.dataset.fileLine = String(normalized.fileLine || index + 1);
+    const crashDiagnostic = primaryDiagnostic(
+      diagnostics.filter((diagnostic) => diagnosticMatchesAddress(diagnostic, normalized.addrText, 'instructionAddress'))
+    );
+    const responsibleDiagnostic = primaryDiagnostic(
+      diagnostics.filter((diagnostic) => diagnosticMatchesAddress(diagnostic, normalized.addrText, 'responsibleInstructionAddress'))
+    );
+    if (responsibleDiagnostic) row.classList.add('disasm-diagnostic-responsible');
+    if (crashDiagnostic) row.classList.add('disasm-diagnostic-crash');
+    const rowDiagnostic = crashDiagnostic || responsibleDiagnostic;
+    if (rowDiagnostic) {
+      row.title = `${diagnosticKindLabel(rowDiagnostic.kind)}: ${rowDiagnostic.message || ''}`.trim();
+    }
 
     const addr = document.createElement('div');
     addr.className = 'disasm-addr';

@@ -3,9 +3,10 @@
  * @brief Rendu du panneau pedagogique en langage humain.
  */
 import { dom } from './dom.js';
+import { diagnosticKindLabel, primaryDiagnostic } from './diagnostics.js';
 import { explainStackEffect } from './render.js';
 
-export function renderExplain(snap, prevSnap, regMap = {}, prevRegMap = {}, meta = {}, analysis = null, mcp = null) {
+export function renderExplain(snap, prevSnap, regMap = {}, prevRegMap = {}, meta = {}, analysis = null, mcp = null, diagnostics = [], crash = null) {
   if (!dom.explainBody) return;
   dom.explainBody.replaceChildren();
   void prevSnap;
@@ -20,10 +21,11 @@ export function renderExplain(snap, prevSnap, regMap = {}, prevRegMap = {}, meta
     return;
   }
 
-  const sections = buildSections(snap, meta, analysis, mcp);
+  const sections = buildSections(snap, meta, analysis, mcp, diagnostics, crash);
   sections.forEach((section) => {
     const card = document.createElement('section');
     card.className = 'explain-section';
+    if (section.severity) card.classList.add(`explain-section-${section.severity}`);
 
     const label = document.createElement('div');
     label.className = 'explain-section-label';
@@ -38,19 +40,37 @@ export function renderExplain(snap, prevSnap, regMap = {}, prevRegMap = {}, meta
   });
 }
 
-function buildSections(snap, meta, analysis, mcp) {
+function buildSections(snap, meta, analysis, mcp, diagnostics = [], crash = null) {
+  const diagnostic = primaryDiagnostic(diagnostics);
+  const crashSection = crash && typeof crash === 'object'
+    ? {
+        label: 'CRASH DETECTE',
+        text: buildCrashText(crash),
+        severity: 'error'
+      }
+    : null;
+  const diagnosticSection = diagnostic
+    ? {
+        label: diagnostic.severity === 'error' ? 'ERREUR' : 'AVERTISSEMENT',
+        text: buildDiagnosticText(diagnostic),
+        severity: diagnostic.severity || 'warning'
+      }
+    : null;
   const mcpSections = Array.isArray(mcp?.explanation?.sections) ? mcp.explanation.sections : null;
   if (mcpSections && mcpSections.length) {
-    return mcpSections.map((section) => ({
+    const rendered = mcpSections.map((section) => ({
       label: String(section?.label || 'Info'),
       text: String(section?.text || '')
     }));
+    return [crashSection, diagnosticSection, ...rendered].filter(Boolean);
   }
 
   const instr = typeof snap.instr === 'string' && snap.instr.trim()
     ? snap.instr.trim()
     : '(instruction inconnue)';
   const overflow = analysis?.overflow && typeof analysis.overflow === 'object' ? analysis.overflow : null;
+  const hasOverflowDiagnostic = Array.isArray(diagnostics)
+    && diagnostics.some((entry) => entry?.kind === 'buffer_overflow');
   const writes = Array.isArray(analysis?.delta?.writes) ? analysis.delta.writes : [];
   const reads = Array.isArray(analysis?.delta?.reads) ? analysis.delta.reads : [];
   const payload = String(meta?.payload_text || meta?.argv1 || '').trim();
@@ -66,14 +86,14 @@ function buildSections(snap, meta, analysis, mcp) {
   if (payload) {
     payloadText = `${payloadLabel} courant: "${payload}".`;
   }
-  if (overflow?.active) {
+  if (overflow?.active && hasOverflowDiagnostic) {
     const reached = Array.isArray(overflow.reached) && overflow.reached.length
       ? overflow.reached.join(', ')
       : 'les zones de controle';
     payloadText = `Le contenu copie a deja depasse le buffer et touche ${reached}.`;
   }
 
-  return [
+  const sections = [
     {
       label: 'Maintenant',
       text: snap.func
@@ -89,4 +109,47 @@ function buildSections(snap, meta, analysis, mcp) {
       text: payloadText
     }
   ];
+  return [crashSection, diagnosticSection, ...sections].filter(Boolean);
+}
+
+function buildDiagnosticText(diagnostic) {
+  const bits = [
+    diagnosticKindLabel(diagnostic.kind),
+    diagnostic.message
+  ].filter(Boolean);
+  if (diagnostic.before || diagnostic.after) {
+    bits.push(`avant ${diagnostic.before || 'n/a'} -> apres ${diagnostic.after || 'n/a'}`);
+  }
+  if (diagnostic.probableSource) {
+    bits.push(`source probable: ${diagnostic.probableSource}`);
+  }
+  if (Number.isFinite(Number(diagnostic.payloadOffset))) {
+    bits.push(`offset payload: ${diagnostic.payloadOffset}`);
+  }
+  if (diagnostic.slot?.offset || diagnostic.slot?.address) {
+    bits.push(`slot: ${diagnostic.slot.offset || '?'} ${diagnostic.slot.address || ''}`.trim());
+  }
+  return bits.join(' • ');
+}
+
+function buildCrashText(crash) {
+  const bits = [
+    String(crash?.reason || '').trim(),
+    String(crash?.type || '').trim() ? `type: ${crash.type}` : '',
+    String(crash?.instructionAddress || '').trim() ? `instr: ${crash.instructionAddress}` : '',
+    String(crash?.instructionText || '').trim() || '',
+    String(crash?.memoryAddress || '').trim() ? `adresse fautive: ${crash.memoryAddress}` : '',
+    String(crash?.probableSource || '').trim() ? `source probable: ${crash.probableSource}` : '',
+    Number.isFinite(Number(crash?.payloadOffset)) ? `offset payload: ${crash.payloadOffset}` : '',
+    crash?.suspectOverwrittenSlot?.kind
+      ? `slot suspect: ${crash.suspectOverwrittenSlot.kind} ${crash.suspectOverwrittenSlot.offset || ''}`.trim()
+      : '',
+    crash?.registers && typeof crash.registers === 'object'
+      ? ['rip', 'eip', 'rsp', 'esp', 'rbp', 'ebp']
+        .filter((name) => crash.registers[name])
+        .map((name) => `${name.toUpperCase()}=${crash.registers[name]}`)
+        .join(' • ')
+      : ''
+  ].filter(Boolean);
+  return bits.join(' • ');
 }

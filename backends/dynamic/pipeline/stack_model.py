@@ -14,17 +14,17 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from backends.static.symbols import extract_symbols
+    from backends.static.binary.symbols import extract_symbols
 except Exception:  # pragma: no cover - optional dependency path
     extract_symbols = None
 
 try:
-    from backends.static.stack_frame import analyse_stack_frame
+    from backends.static.disasm.stack_frame import analyse_stack_frame
 except Exception:  # pragma: no cover - optional dependency path
     analyse_stack_frame = None
 
 try:
-    from backends.static.calling_convention import analyze_calling_conventions
+    from backends.static.disasm.calling_convention import analyze_calling_conventions
 except Exception:  # pragma: no cover - optional dependency path
     analyze_calling_conventions = None
 
@@ -1079,6 +1079,7 @@ def _overflow_summary(analysis: dict) -> Optional[dict]:
         return None
 
     writes = delta.get("writes") if isinstance(delta.get("writes"), list) else []
+    has_runtime_writes = bool(writes)
     buffer_touched = any(
         slot.get("role") == "buffer" and (slot.get("recentWrite") or slot.get("changed"))
         for slot in slots
@@ -1102,7 +1103,7 @@ def _overflow_summary(analysis: dict) -> Optional[dict]:
         end = _parse_int(slot.get("end"))
         if start is None or end is None or end <= buffer_end:
             continue
-        if slot.get("recentWrite") or slot.get("changed") or slot.get("corrupted"):
+        if slot.get("recentWrite") or (has_runtime_writes and slot.get("changed")):
             touched.append(slot)
             frontier = max(frontier, end)
 
@@ -1110,9 +1111,12 @@ def _overflow_summary(analysis: dict) -> Optional[dict]:
         control_corruption = [
             slot
             for slot in slots
-            if slot.get("role") in {"saved_bp", "return_address"} and slot.get("corrupted")
+            if (
+                slot.get("role") in {"saved_bp", "return_address"}
+                and (slot.get("recentWrite") or (crossing_write and slot.get("changed")))
+            )
         ]
-        if control_corruption and (buffer_touched or crossing_write):
+        if control_corruption and crossing_write:
             touched = control_corruption
             frontier = max(_parse_int(slot.get("end")) or buffer_end for slot in touched)
 

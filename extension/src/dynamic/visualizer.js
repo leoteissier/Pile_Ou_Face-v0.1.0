@@ -66,6 +66,8 @@ function createVisualizer(config) {
         traceRunId: getTraceRunId(activeTrace),
         snapshots: activeTrace.snapshots,
         risks: activeTrace.risks,
+        diagnostics: Array.isArray(activeTrace.diagnostics) ? activeTrace.diagnostics : [],
+        crash: activeTrace && typeof activeTrace.crash === 'object' ? activeTrace.crash : null,
         meta: activeTrace.meta,
         analysisByStep: activeTrace.analysisByStep ?? {}
       });

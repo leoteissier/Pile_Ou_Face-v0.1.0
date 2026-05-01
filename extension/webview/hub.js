@@ -2,6 +2,7 @@
  * @file hub.js
  * @brief Contrôleur du hub Pile ou Face — UI alignée MOSCOW.
  */
+/* global TextEncoder */
 const vscode = acquireVsCodeApi();
 const STORAGE_KEY = 'pile-ou-face-hub';
 let loadAllPending = 0;
@@ -274,9 +275,36 @@ const dynamicArchBits = document.getElementById('dynamicArchBits');
 const dynamicPie = document.getElementById('dynamicPie');
 const dynamicSourcePathInput = document.getElementById('dynamicSourcePath');
 const dynamicSourceHint = document.getElementById('dynamicSourceHint');
-const argvPayloadInput = document.getElementById('argvPayload');
+const payloadBuilderInput = document.getElementById('payloadBuilderInput');
+const payloadBuilderLevelButtons = document.querySelectorAll('[data-payload-builder-level]');
+const payloadBuilderModeHint = document.getElementById('payloadBuilderModeHint');
 const argvPayloadHint = document.getElementById('argvPayloadHint');
 const dynamicPayloadTargetMode = document.getElementById('dynamicPayloadTargetMode');
+const dynamicPayloadTabs = document.querySelectorAll('[data-payload-mode]');
+const dynamicPayloadPanels = document.querySelectorAll('[data-payload-panel]');
+const payloadFileSource = document.getElementById('payloadFileSource');
+const payloadFileGuestPath = document.getElementById('payloadFileGuestPath');
+const payloadFileHostPath = document.getElementById('payloadFileHostPath');
+const payloadFileContent = document.getElementById('payloadFileContent');
+const exploitHelperTemplate = document.getElementById('exploitHelperTemplate');
+const exploitHelperArch = document.getElementById('exploitHelperArch');
+const exploitHelperEndian = document.getElementById('exploitHelperEndian');
+const exploitHelperBadchars = document.getElementById('exploitHelperBadchars');
+const btnDynamicImportPwntoolsScript = document.getElementById('btnDynamicImportPwntoolsScript');
+const btnAnalyzePwntoolsScript = document.getElementById('btnAnalyzePwntoolsScript');
+const payloadPwntoolsSourceLabel = document.getElementById('payloadPwntoolsSourceLabel');
+const payloadPwntoolsScriptInput = document.getElementById('payloadPwntoolsScriptInput');
+const payloadPwntoolsScriptWarning = document.getElementById('payloadPwntoolsScriptWarning');
+const payloadPwntoolsCaptureList = document.getElementById('payloadPwntoolsCaptureList');
+const payloadPreviewStatus = document.getElementById('payloadPreviewStatus');
+const payloadPreviewTarget = document.getElementById('payloadPreviewTarget');
+const payloadPreviewSize = document.getElementById('payloadPreviewSize');
+const payloadPreviewHex = document.getElementById('payloadPreviewHex');
+const payloadPreviewAscii = document.getElementById('payloadPreviewAscii');
+const payloadPreviewTruncated = document.getElementById('payloadPreviewTruncated');
+const payloadPreviewSnippetDetails = document.getElementById('payloadPreviewSnippetDetails');
+const payloadPwntoolsSnippet = document.getElementById('payloadPwntoolsSnippet');
+const payloadPreviewWarnings = document.getElementById('payloadPreviewWarnings');
 const dynamicTraceHistory = document.getElementById('dynamicTraceHistory');
 const btnRefreshDynamicTraceHistory = document.getElementById('btnRefreshDynamicTraceHistory');
 const btnClearDynamicTraceHistory = document.getElementById('btnClearDynamicTraceHistory');
@@ -291,7 +319,6 @@ let dynamicTraceInitState = {
   archBits: 64,
   pie: false,
   sourcePath: '',
-  sourcePathTouched: false,
   sourceEnrichmentEnabled: false,
   sourceEnrichmentStatus: '',
   sourceEnrichmentMessage: '',
@@ -311,6 +338,13 @@ let dynamicTraceHistoryState = {
   items: [],
   activeTracePath: ''
 };
+let dynamicPayloadMode = 'payload_builder';
+let dynamicPayloadBuilderLevel = 'beginner';
+let dynamicPayloadPreviewState = null;
+let dynamicPwntoolsScriptPath = '';
+let dynamicPwntoolsScriptName = '';
+let dynamicPwntoolsAnalysisResult = null;
+let dynamicPwntoolsSelectedCapture = null;
 
 // localStorage helpers
 function _loadStorage() {
@@ -973,7 +1007,7 @@ function renderOllamaConversation() {
     if (!ollamaUiState.conversation.length) {
       const empty = document.createElement('p');
       empty.className = 'ollama-chat-empty';
-      empty.textContent = 'Aucune discussion pour l’instant. Pose une première question.';
+      empty.textContent = "Aucune discussion pour l'instant. Pose une première question.";
       el.appendChild(empty);
       return;
     }
@@ -1073,11 +1107,11 @@ function submitOllamaChatPrompt(options = {}) {
   const prompt = String(options.prompt ?? input?.value ?? '').trim();
   const model = String(options.model || getCurrentOllamaModel() || ollamaUiState.lastModel || '').trim();
   if (!model) {
-    setOllamaStatus('Sélectionne d’abord un modèle Ollama.', true);
+    setOllamaStatus("Sélectionne d'abord un modèle Ollama.", true);
     return;
   }
   if (!prompt) {
-    setOllamaStatus('Écris un message avant d’envoyer.', true);
+    setOllamaStatus("Écris un message avant d'envoyer.", true);
     return;
   }
   const contextualPrompt = buildOllamaPromptWithContext(prompt);
@@ -1479,7 +1513,7 @@ function isRawBinarySelected() {
 function markRawTabUnavailable(tabId) {
   const contentIds = RAW_UNSUPPORTED_TABS[tabId];
   if (!contentIds) return false;
-  const message = 'Cette vue n’est pas encore disponible pour un blob brut. Utilisez plutôt Désassemblage, CFG, Call Graph, Fonctions, Xrefs, Strings, Recherche, ROP, Déobfuscation, Infos, Sections ou Hex.';
+  const message = "Cette vue n'est pas encore disponible pour un blob brut. Utilisez plutôt Désassemblage, CFG, Call Graph, Fonctions, Xrefs, Strings, Recherche, ROP, Déobfuscation, Infos, Sections ou Hex.";
   contentIds.forEach((id) => setStaticLoading(id, message));
   return true;
 }
@@ -1674,6 +1708,46 @@ function setDynamicTraceStatus(text) {
   if (dynamicTraceStatus) dynamicTraceStatus.textContent = text;
 }
 
+function truncateDebugValue(value, limit = 160) {
+  const text = String(value ?? '');
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function sanitizeDebugDetails(details = {}) {
+  const out = {};
+  Object.entries(details && typeof details === 'object' ? details : {}).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      out[key] = value.slice(0, 12).map((item) => (
+        item && typeof item === 'object' ? sanitizeDebugDetails(item) : truncateDebugValue(item)
+      ));
+    } else if (value && typeof value === 'object') {
+      out[key] = sanitizeDebugDetails(value);
+    } else {
+      out[key] = truncateDebugValue(value);
+    }
+  });
+  return out;
+}
+
+function debugDynamicPayload(event, details = {}) {
+  const payload = sanitizeDebugDetails(details);
+  try {
+    console.debug(`[pof:payload] ${event}`, payload);
+  } catch (_) {
+    // ignore console failures in restricted webviews
+  }
+  try {
+    vscode.postMessage({
+      type: 'hubDebugLog',
+      scope: 'payload',
+      event,
+      details: payload,
+    });
+  } catch (_) {
+    // ignore logging failures
+  }
+}
+
 function buildDynamicSourceHintText({
   sourcePath = '',
   sourceEnrichmentEnabled = false,
@@ -1727,12 +1801,10 @@ function buildDynamicPayloadTargetHint() {
 }
 
 function requestRunTraceInit(preset = null, forcedBinaryPath = '') {
-  const currentSourcePath = dynamicSourcePathInput?.value?.trim() || '';
   vscode.postMessage({
     type: 'requestRunTraceInit',
     binaryPath: forcedBinaryPath || binaryPathInput?.value?.trim() || '',
-    sourcePath: currentSourcePath || dynamicTraceInitState.sourcePath || '',
-    sourcePathExplicitlyCleared: dynamicTraceInitState.sourcePathTouched === true && !currentSourcePath,
+    sourcePath: dynamicSourcePathInput?.value?.trim() || dynamicTraceInitState.sourcePath || '',
     payloadTargetMode: getDynamicPayloadTargetMode(),
     preset
   });
@@ -1814,7 +1886,18 @@ function buildPayloadEndianHint(input) {
 
 function updateArgvPayloadHint() {
   if (!argvPayloadHint) return;
-  const raw = argvPayloadInput?.value ?? '';
+  if (dynamicPayloadMode === 'pwntools_script') {
+    const entries = getPwntoolsCaptureEntries();
+    const selected = entries.find((entry) => entry.id === dynamicPwntoolsSelectedCapture?.captureId) || entries[0] || null;
+    if (!selected) {
+      argvPayloadHint.textContent = 'Analyse un script pwntools pour extraire un payload.';
+      return;
+    }
+    const target = dynamicPwntoolsSelectedCapture?.target || selected.targetHint || 'stdin';
+    argvPayloadHint.textContent = `Capture pwntools sélectionnée: ${selected.size} byte(s). Cible effective: ${dynamicPayloadTargetLabel(target)}.`;
+    return;
+  }
+  const raw = payloadBuilderInput?.value ?? '';
   const trimmed = raw.trim();
   const targetHint = buildDynamicPayloadTargetHint();
   const currentTarget = dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget());
@@ -1823,11 +1906,664 @@ function updateArgvPayloadHint() {
     return;
   }
   try {
-    const parsed = parsePayloadExpressionPreview(trimmed);
+    const helper = getExploitHelperApi();
+    const resolved = helper?.buildPayload
+      ? helper.buildPayload(trimmed, dynamicPayloadBuilderLevel, {
+        arch: getDynamicResolvedArch(),
+        endian: exploitHelperEndian?.value || 'little',
+        badchars: exploitHelperBadchars?.value || '',
+        targetMode: getDynamicPayloadTargetMode(),
+      })
+      : null;
+    const parsed = resolved ? { bytes: resolved.size || 0 } : parsePayloadExpressionPreview(trimmed);
     const endianHint = buildPayloadEndianHint(trimmed);
     argvPayloadHint.textContent = `Payload courant: ${parsed.bytes} byte(s). Cible effective: ${currentTarget}. ${targetHint}${endianHint ? ` ${endianHint}` : ''}`;
   } catch (_) {
     argvPayloadHint.textContent = 'Expression payload invalide.';
+  }
+}
+
+function getExploitHelperApi() {
+  return window.PofExploitHelper || null;
+}
+
+function getPayloadPreviewApi() {
+  return window.PofPayloadPreview || null;
+}
+
+function normalizeDynamicPayloadMode(mode) {
+  const value = String(mode || '').trim().toLowerCase();
+  if (value === 'simple' || value === 'python') return 'payload_builder';
+  return ['payload_builder', 'file', 'exploit_helper', 'pwntools_script'].includes(value) ? value : 'payload_builder';
+}
+
+function normalizePayloadBuilderLevel(level, fallback = 'beginner') {
+  const value = String(level || '').trim().toLowerCase();
+  if (value === 'advanced') return 'advanced';
+  if (value === 'beginner') return 'beginner';
+  return fallback === 'advanced' ? 'advanced' : 'beginner';
+}
+
+function getDynamicPayloadBuilderHint(level = dynamicPayloadBuilderLevel) {
+  if (normalizePayloadBuilderLevel(level) === 'advanced') {
+    return 'Advanced : `b"A"*8`, `p32(0xdeadbeef)`, `flat([...])`, `cyclic(128)`.';
+  }
+  return 'Beginner : `A*8`, `AAAA`, `\\x41\\x42`.';
+}
+
+function updatePayloadBuilderUi() {
+  if (payloadBuilderModeHint) payloadBuilderModeHint.textContent = getDynamicPayloadBuilderHint();
+  payloadBuilderLevelButtons.forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.payloadBuilderLevel === dynamicPayloadBuilderLevel);
+  });
+  if (payloadBuilderInput) {
+    payloadBuilderInput.placeholder = dynamicPayloadBuilderLevel === 'advanced'
+      ? 'b"A"*72 + p64(0x401234)'
+      : 'A*64';
+  }
+}
+
+function setDynamicPayloadBuilderLevel(level) {
+  dynamicPayloadBuilderLevel = normalizePayloadBuilderLevel(level, dynamicPayloadBuilderLevel);
+  updatePayloadBuilderUi();
+  updateArgvPayloadHint();
+}
+
+function setDynamicPayloadMode(mode) {
+  const normalized = normalizeDynamicPayloadMode(mode);
+  dynamicPayloadMode = normalized;
+  dynamicPayloadTabs.forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.payloadMode === normalized);
+  });
+  dynamicPayloadPanels.forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.payloadPanel === normalized);
+  });
+  updateDynamicPayloadFilePanels();
+  updateExploitHelperTemplateFields();
+  updatePayloadBuilderUi();
+  updateArgvPayloadHint();
+}
+
+function formatDynamicPayloadSize(size) {
+  const count = Math.max(0, Number(size) || 0);
+  return `${count} byte${count === 1 ? '' : 's'}`;
+}
+
+function buildDynamicPayloadSourceSnapshot() {
+  const mode = dynamicPayloadMode;
+  if (mode === 'payload_builder') {
+    return {
+      mode,
+      builderLevel: dynamicPayloadBuilderLevel,
+      input: String(payloadBuilderInput?.value || ''),
+      targetMode: getDynamicPayloadTargetMode(),
+      arch: getDynamicResolvedArch(),
+      endian: exploitHelperEndian?.value || 'little',
+      badchars: exploitHelperBadchars?.value || '',
+    };
+  }
+  if (mode === 'file') {
+    return {
+      mode,
+      source: payloadFileSource?.value || 'inline',
+      guestPath: String(payloadFileGuestPath?.value || '/tmp/pof-input.txt'),
+      hostPath: String(payloadFileHostPath?.value || ''),
+      inlineContent: String(payloadFileContent?.value || ''),
+    };
+  }
+  if (mode === 'exploit_helper') {
+    return {
+      mode,
+      ...collectExploitHelperFields(),
+    };
+  }
+  if (mode === 'pwntools_script') {
+    return {
+      mode,
+      sourceFileName: dynamicPwntoolsScriptName || '',
+      scriptPath: dynamicPwntoolsScriptPath || '',
+      scriptContent: String(payloadPwntoolsScriptInput?.value || ''),
+      selectedCapture: dynamicPwntoolsSelectedCapture || null,
+    };
+  }
+  return { mode };
+}
+
+function hexToByteArray(hex) {
+  const cleaned = String(hex || '').replace(/\s+/g, '').replace(/^0x/i, '').trim();
+  if (!cleaned || cleaned.length % 2 !== 0) return [];
+  return cleaned.match(/../g)?.map((part) => Number.parseInt(part, 16) & 0xff) || [];
+}
+
+function byteArrayToHex(bytes) {
+  return (Array.isArray(bytes) ? bytes : Array.from(bytes || []))
+    .map((value) => (Number(value) & 0xff).toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function normalizeCaptureHex(entry) {
+  const fromHex = String(entry?.hex || '').replace(/\s+/g, '').replace(/^0x/i, '').trim();
+  if (fromHex && /^[0-9a-f]+$/i.test(fromHex) && fromHex.length % 2 === 0) {
+    return fromHex.toLowerCase();
+  }
+  const data = entry?.data;
+  if (Array.isArray(data)) return byteArrayToHex(data);
+  if (data instanceof Uint8Array) return byteArrayToHex(data);
+  if (typeof data === 'string') {
+    const cleaned = data.replace(/\s+/g, '').replace(/^0x/i, '').trim();
+    if (cleaned && /^[0-9a-f]+$/i.test(cleaned) && cleaned.length % 2 === 0) {
+      return cleaned.toLowerCase();
+    }
+    return byteArrayToHex(new TextEncoder().encode(data));
+  }
+  return '';
+}
+
+function hexHasNullByte(hex) {
+  const cleaned = String(hex || '').replace(/\s+/g, '').replace(/^0x/i, '').trim().toLowerCase();
+  return (cleaned.match(/../g) || []).includes('00');
+}
+
+function getPwntoolsCaptureEntries(result = dynamicPwntoolsAnalysisResult) {
+  if (!result || typeof result !== 'object') return [];
+  const entries = [];
+  const captured = Array.isArray(result.captures)
+    ? result.captures
+    : (Array.isArray(result.captured) ? result.captured : []);
+  captured.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object') return;
+    const hex = normalizeCaptureHex(entry);
+    if (!hex) return;
+    entries.push({
+      id: String(entry.id || `capture-${index + 1}`),
+      kind: String(entry.kind || entry.type || 'send').trim() || 'send',
+      targetHint: String(entry.targetHint || 'stdin').trim() || 'stdin',
+      size: Number(entry.size ?? hexToByteArray(hex).length) || 0,
+      hex,
+      hexPreview: String(entry.hexPreview || hex || '').trim(),
+      asciiPreview: String(entry.asciiPreview || ''),
+      processArgs: Array.isArray(entry.processArgs) ? entry.processArgs.map(String) : [],
+      delimiterPreview: String(entry.delimiterPreview || ''),
+      remoteTarget: String(entry.remoteTarget || ''),
+      sourceType: 'capture',
+    });
+  });
+  const payloadGlobal = result.globals && typeof result.globals === 'object'
+    ? result.globals.payload
+    : null;
+  if (payloadGlobal && typeof payloadGlobal === 'object') {
+    entries.push({
+      id: 'global-payload',
+      kind: 'global_payload',
+      targetHint: 'stdin',
+      size: Number(payloadGlobal.size ?? hexToByteArray(payloadGlobal.hex).length) || 0,
+      hex: String(payloadGlobal.hex || '').trim(),
+      hexPreview: String(payloadGlobal.hexPreview || payloadGlobal.hex || '').trim(),
+      asciiPreview: String(payloadGlobal.asciiPreview || ''),
+      processArgs: [],
+      delimiterPreview: '',
+      remoteTarget: '',
+      sourceType: 'global',
+    });
+  }
+  return entries;
+}
+
+function renderPwntoolsCaptureList() {
+  if (!payloadPwntoolsCaptureList) return;
+  payloadPwntoolsCaptureList.replaceChildren();
+  const entries = getPwntoolsCaptureEntries();
+  if (!entries.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Aucun payload capturé.';
+    payloadPwntoolsCaptureList.appendChild(empty);
+    return;
+  }
+
+  entries.forEach((entry) => {
+    const card = document.createElement('div');
+    card.className = [
+      'dynamic-pwntools-capture',
+      dynamicPwntoolsSelectedCapture?.captureId === entry.id ? 'is-selected' : '',
+    ].filter(Boolean).join(' ');
+
+    const title = document.createElement('div');
+    title.className = 'dynamic-pwntools-capture-title';
+    title.textContent = entry.kind;
+    card.appendChild(title);
+
+    const meta = document.createElement('div');
+    meta.className = 'dynamic-pwntools-capture-meta';
+    const metaBits = [
+      `${entry.size} byte${entry.size > 1 ? 's' : ''}`,
+      entry.targetHint || 'stdin',
+      entry.delimiterPreview ? `after "${entry.delimiterPreview}"` : '',
+      entry.remoteTarget ? `remote ${entry.remoteTarget}` : '',
+    ].filter(Boolean);
+    meta.textContent = metaBits.join(' • ');
+    card.appendChild(meta);
+
+    const ascii = document.createElement('pre');
+    ascii.className = 'dynamic-pwntools-capture-preview';
+    ascii.textContent = entry.asciiPreview || '—';
+    card.appendChild(ascii);
+
+    const hex = document.createElement('pre');
+    hex.className = 'dynamic-pwntools-capture-preview';
+    hex.textContent = entry.hexPreview || entry.hex || '—';
+    card.appendChild(hex);
+
+    const actions = document.createElement('div');
+    actions.className = 'dynamic-pwntools-capture-actions';
+
+    const stdinBtn = document.createElement('button');
+    stdinBtn.type = 'button';
+    stdinBtn.className = 'btn btn-secondary btn-sm';
+    stdinBtn.textContent = 'Utiliser comme stdin';
+    stdinBtn.addEventListener('click', () => {
+      dynamicPwntoolsSelectedCapture = {
+        captureId: entry.id,
+        kind: entry.kind,
+        target: 'stdin',
+      };
+      updateArgvPayloadHint();
+      renderPwntoolsCaptureList();
+      refreshDynamicPayloadPreviewAfterSelection('pwntools-select-stdin');
+      setDynamicTraceStatus('Capture pwntools sélectionnée pour stdin.');
+    });
+    actions.appendChild(stdinBtn);
+
+    const argvBtn = document.createElement('button');
+    argvBtn.type = 'button';
+    argvBtn.className = 'btn btn-secondary btn-sm';
+    argvBtn.textContent = 'Utiliser comme argv[1]';
+    argvBtn.addEventListener('click', () => {
+      dynamicPwntoolsSelectedCapture = {
+        captureId: entry.id,
+        kind: entry.kind,
+        target: 'argv1',
+      };
+      updateArgvPayloadHint();
+      renderPwntoolsCaptureList();
+      refreshDynamicPayloadPreviewAfterSelection('pwntools-select-argv1');
+      setDynamicTraceStatus('Capture pwntools sélectionnée pour argv[1].');
+    });
+    actions.appendChild(argvBtn);
+
+    card.appendChild(actions);
+    payloadPwntoolsCaptureList.appendChild(card);
+  });
+}
+
+function getDynamicPreviewFingerprint() {
+  const previewApi = getPayloadPreviewApi();
+  const snapshot = buildDynamicPayloadSourceSnapshot();
+  return previewApi?.buildPayloadPreviewFingerprint
+    ? previewApi.buildPayloadPreviewFingerprint(snapshot)
+    : JSON.stringify(snapshot);
+}
+
+function createDynamicPreviewState(status = 'stale', overrides = {}) {
+  const previewApi = getPayloadPreviewApi();
+  const target = dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget());
+  if (status === 'error') {
+    return previewApi?.createErrorPreviewState
+      ? previewApi.createErrorPreviewState(overrides.error || 'Erreur', { target, ...overrides })
+      : { status: 'error', target, size: 0, previewHexDisplay: '—', previewAsciiDisplay: '—', warnings: [], ...overrides };
+  }
+  return previewApi?.createStalePreviewState
+    ? previewApi.createStalePreviewState({ target, ...overrides })
+    : { status: 'stale', target, size: 0, previewHexDisplay: '—', previewAsciiDisplay: '—', warnings: [], ...overrides };
+}
+
+function normalizeGeneratedPreview(rawResult, { mode, template = '', targetMode = '', currentPayloadSource = '' } = {}) {
+  const helper = getExploitHelperApi();
+  const result = rawResult || {};
+  const bytes = Array.isArray(result.bytes) ? result.bytes.map((value) => Number(value) & 0xff) : [];
+  const previewHex = String(result.previewHex || helper?.bytesToHex?.(bytes) || '').trim();
+  return {
+    mode,
+    template,
+    targetMode: targetMode || getDynamicInputTargetModeForPayload(),
+    payloadBytesHex: previewHex,
+    sourceFields: result.sourceFields || {},
+    generatedSnippet: String(result.generatedSnippet || ''),
+    generatedPwntoolsSnippet: String(result.generatedSnippet || ''),
+    currentPayloadSource: String(currentPayloadSource || ''),
+    resolvedPayloadBytes: bytes,
+    size: Number(result.size ?? bytes.length) || 0,
+    previewHex,
+    previewAscii: String(result.previewAscii || helper?.bytesToAscii?.(bytes) || ''),
+    warnings: Array.isArray(result.warnings) ? result.warnings.map(String) : [],
+    payloadExpr: String(result.payloadExpr || helper?.bytesToEscaped?.(bytes) || ''),
+  };
+}
+
+function renderDynamicPayloadPreview(state) {
+  const current = state || createDynamicPreviewState('stale');
+  if (payloadPreviewStatus) {
+    payloadPreviewStatus.textContent = current.status === 'ready'
+      ? 'OK'
+      : current.status === 'error'
+        ? 'Erreur'
+        : '⚠️ Obsolète';
+    payloadPreviewStatus.dataset.state = current.status;
+  }
+  if (payloadPreviewTarget) payloadPreviewTarget.textContent = current.target || dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget());
+  if (payloadPreviewSize) payloadPreviewSize.textContent = formatDynamicPayloadSize(current.size || 0);
+  if (payloadPreviewHex) payloadPreviewHex.textContent = current.status === 'error' ? '—' : (current.previewHexDisplay || '—');
+  if (payloadPreviewAscii) payloadPreviewAscii.textContent = current.status === 'error' ? '—' : (current.previewAsciiDisplay || '—');
+  if (payloadPreviewTruncated) {
+    payloadPreviewTruncated.textContent = current.previewTruncated ? 'Affichage tronqué aux 256 premiers octets.' : '';
+  }
+  if (payloadPwntoolsSnippet) payloadPwntoolsSnippet.textContent = current.status === 'error' ? '' : (current.generatedPwntoolsSnippet || '');
+  if (payloadPreviewSnippetDetails && !current.generatedPwntoolsSnippet) payloadPreviewSnippetDetails.open = false;
+  if (payloadPreviewWarnings) {
+    payloadPreviewWarnings.replaceChildren();
+    payloadPreviewWarnings.classList.toggle('error', current.status === 'error');
+    payloadPreviewWarnings.classList.toggle('warning', current.status !== 'error' && Array.isArray(current.warnings) && current.warnings.length > 0);
+    const items = current.status === 'error'
+      ? [String(current.error || 'Erreur inconnue')]
+      : (Array.isArray(current.warnings) && current.warnings.length ? current.warnings : ['Aucun warning.']);
+    items.forEach((message) => {
+      const line = document.createElement('li');
+      line.textContent = String(message);
+      payloadPreviewWarnings.appendChild(line);
+    });
+  }
+}
+
+function invalidateDynamicPayloadPreview() {
+  dynamicPayloadPreviewState = createDynamicPreviewState('stale', {
+    fingerprint: getDynamicPreviewFingerprint(),
+  });
+  renderDynamicPayloadPreview(dynamicPayloadPreviewState);
+}
+
+function getDynamicResolvedArch() {
+  const explicit = String(exploitHelperArch?.value || 'auto').toLowerCase();
+  if (explicit === 'i386' || explicit === 'amd64') return explicit;
+  return Number(dynamicTraceInitState.archBits) === 32 ? 'i386' : 'amd64';
+}
+
+function getDynamicInputTargetModeForPayload() {
+  if (dynamicPayloadMode === 'file') return 'argv1';
+  return getDynamicPayloadTargetMode();
+}
+
+function updateDynamicPayloadFilePanels() {
+  const source = payloadFileSource?.value || 'inline';
+  document.querySelectorAll('[data-file-source-panel]').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.fileSourcePanel === source);
+  });
+}
+
+function updateExploitHelperTemplateFields() {
+  const template = exploitHelperTemplate?.value || 'pattern';
+  document.querySelectorAll('[data-helper-fields]').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.helperFields === template);
+  });
+}
+
+function collectExploitHelperFields() {
+  const template = exploitHelperTemplate?.value || 'pattern';
+  const archChoice = exploitHelperArch?.value || 'auto';
+  const archResolved = archChoice === 'auto' ? getDynamicResolvedArch() : archChoice;
+  const fields = {
+    template,
+    arch: archChoice === 'auto' ? archResolved : archChoice,
+    archChoice,
+    archResolved,
+    endian: exploitHelperEndian?.value || 'little',
+    badchars: exploitHelperBadchars?.value?.trim() || '',
+    targetMode: getDynamicInputTargetModeForPayload(),
+  };
+  if (template === 'pattern') {
+    fields.patternLength = document.getElementById('exploitPatternLength')?.value || '128';
+    fields.crashedValue = document.getElementById('exploitPatternCrashedValue')?.value?.trim() || '';
+  } else if (template === 'overwrite_variable') {
+    fields.offset = document.getElementById('exploitOverwriteOffset')?.value || '0';
+    fields.value = document.getElementById('exploitOverwriteValue')?.value?.trim() || '';
+    fields.size = document.getElementById('exploitOverwriteSize')?.value || '4';
+  } else if (template === 'ret2win') {
+    fields.offset = document.getElementById('exploitRet2winOffset')?.value || '0';
+    fields.winAddress = document.getElementById('exploitRet2winAddress')?.value?.trim() || '';
+    fields.retGadget = document.getElementById('exploitRet2winRetGadget')?.value?.trim() || '';
+  } else if (template === 'call_one_arg') {
+    fields.offset = document.getElementById('exploitCallOffset')?.value || '0';
+    fields.functionAddress = document.getElementById('exploitCallFunctionAddress')?.value?.trim() || '';
+    fields.argumentValue = document.getElementById('exploitCallArgument')?.value?.trim() || '';
+    fields.returnAddress = document.getElementById('exploitCallReturnAddress')?.value?.trim() || '';
+    fields.popRdiGadget = document.getElementById('exploitCallPopRdi')?.value?.trim() || '';
+  }
+  return fields;
+}
+
+function buildDynamicGeneratedInput() {
+  const helper = getExploitHelperApi();
+  if (!helper) throw new Error('Exploit helper indisponible.');
+  if (dynamicPayloadMode === 'exploit_helper') {
+    const fields = collectExploitHelperFields();
+    return normalizeGeneratedPreview(
+      helper.generateExploitHelper(fields),
+      {
+        mode: 'exploit_helper',
+        template: fields.template,
+        targetMode: fields.targetMode,
+        currentPayloadSource: JSON.stringify(fields),
+      }
+    );
+  }
+  return null;
+}
+
+function buildDynamicBuilderInput() {
+  const helper = getExploitHelperApi();
+  if (!helper?.buildPayload) throw new Error('Helper payload indisponible.');
+  const payloadSource = String(payloadBuilderInput?.value || '').trim();
+  const targetMode = getDynamicPayloadTargetMode();
+  const resolved = normalizeGeneratedPreview(
+    helper.buildPayload(payloadSource, dynamicPayloadBuilderLevel, {
+      arch: getDynamicResolvedArch(),
+      endian: exploitHelperEndian?.value || 'little',
+      badchars: exploitHelperBadchars?.value || '',
+      targetMode,
+    }),
+    {
+      mode: 'payload_builder',
+      targetMode,
+      currentPayloadSource: payloadSource,
+    }
+  );
+  return {
+    ...resolved,
+    currentPayloadSource: payloadSource,
+    payloadExpr: resolved.payloadExpr || '',
+    sourceFields: {
+      input: payloadSource,
+      expression: payloadSource,
+      builderLevel: dynamicPayloadBuilderLevel,
+    },
+  };
+}
+
+function buildDynamicFileInput() {
+  const source = payloadFileSource?.value === 'path' ? 'path' : 'inline';
+  const guestPath = String(payloadFileGuestPath?.value || '/tmp/pof-input.txt').trim() || '/tmp/pof-input.txt';
+  const hostPath = String(payloadFileHostPath?.value || '').trim();
+  const inlineContent = payloadFileContent?.value || '';
+  const warnings = [];
+  const inlineBytes = source === 'inline' ? Array.from(new TextEncoder().encode(inlineContent)) : [];
+  if (source === 'path' && !hostPath) warnings.push('Fichier local requis.');
+  if (source === 'inline' && !inlineContent) warnings.push('Contenu de fichier vide.');
+  const generatedSnippet = [
+    'from pwn import *',
+    `io = process([exe, ${JSON.stringify(guestPath)}])`,
+  ].join('\n');
+  return {
+    mode: 'file',
+    targetMode: 'argv1',
+    payloadBytesHex: '',
+    sourceFields: { source, guestPath, hostPath: source === 'path' ? hostPath : '', passAs: 'argv1' },
+    generatedSnippet,
+    generatedPwntoolsSnippet: generatedSnippet,
+    currentPayloadSource: source === 'inline' ? inlineContent : hostPath,
+    resolvedPayloadBytes: inlineBytes,
+    size: inlineBytes.length,
+    previewHex: '',
+    previewAscii: source === 'inline' ? inlineContent.slice(0, 160) : hostPath,
+    warnings,
+    file: {
+      source,
+      guestPath,
+      hostPath: source === 'path' ? hostPath : '',
+      inlineContent: source === 'inline' ? inlineContent : '',
+      passAs: 'argv1',
+    },
+  };
+}
+
+function buildDynamicPwntoolsInput() {
+  const result = dynamicPwntoolsAnalysisResult;
+  if (!result || typeof result !== 'object') {
+    throw new Error('Analyse pwntools requise avant la preview.');
+  }
+  const entries = getPwntoolsCaptureEntries(result);
+  if (!entries.length) {
+    throw new Error('Aucun payload capturé dans le script pwntools.');
+  }
+  const selected = entries.find((entry) => entry.id === dynamicPwntoolsSelectedCapture?.captureId) || entries[0];
+  const targetMode = dynamicPwntoolsSelectedCapture?.target || selected.targetHint || 'stdin';
+  const warnings = [
+    ...(Array.isArray(result.warnings) ? result.warnings.map(String) : []),
+  ];
+  if (targetMode === 'argv1' && hexHasNullByte(selected.hex)) {
+    warnings.push('argv[1] ne peut pas transporter un octet NUL exact.');
+  }
+  return {
+    mode: 'pwntools_script',
+    targetMode,
+    payloadBytesHex: selected.hex,
+    sourceFields: {
+      sourceFileName: dynamicPwntoolsScriptName || result.sourceFileName || '',
+      captureId: selected.id,
+      selectedCaptureKind: selected.kind,
+      target: targetMode,
+      processArgs: selected.processArgs,
+    },
+    generatedSnippet: String(payloadPwntoolsScriptInput?.value || ''),
+    generatedPwntoolsSnippet: String(payloadPwntoolsScriptInput?.value || ''),
+    currentPayloadSource: String(payloadPwntoolsScriptInput?.value || ''),
+    resolvedPayloadBytes: hexToByteArray(selected.hex),
+    size: selected.size,
+    previewHex: selected.hex,
+    previewAscii: selected.asciiPreview || '',
+    warnings,
+    payloadExpr: '',
+    sourceFileName: dynamicPwntoolsScriptName || result.sourceFileName || '',
+    selectedCaptureKind: selected.kind,
+    target: targetMode,
+  };
+}
+
+function buildDynamicInputConfig() {
+  if (dynamicPayloadMode === 'payload_builder') {
+    return buildDynamicBuilderInput();
+  }
+  if (dynamicPayloadMode === 'file') {
+    return buildDynamicFileInput();
+  }
+  if (dynamicPayloadMode === 'exploit_helper') {
+    return buildDynamicGeneratedInput();
+  }
+  if (dynamicPayloadMode === 'pwntools_script') {
+    return buildDynamicPwntoolsInput();
+  }
+  throw new Error('Mode payload non supporte pour la preview.');
+}
+
+function resolveDynamicPreviewFromUi({ reason = 'manual' } = {}) {
+  const fingerprint = getDynamicPreviewFingerprint();
+  const inputConfig = buildDynamicInputConfig();
+  const previewApi = getPayloadPreviewApi();
+  const previewState = previewApi?.buildResolvedPreviewState
+    ? previewApi.buildResolvedPreviewState(
+      {
+        mode: inputConfig.mode,
+        target: dynamicPayloadTargetLabel(
+          inputConfig.targetMode && inputConfig.targetMode !== 'auto'
+            ? inputConfig.targetMode
+            : getDynamicEffectivePayloadTarget()
+        ),
+        currentPayloadSource: inputConfig.currentPayloadSource || '',
+        resolvedPayloadBytes: inputConfig.resolvedPayloadBytes || [],
+        generatedPwntoolsSnippet: inputConfig.generatedPwntoolsSnippet || inputConfig.generatedSnippet || '',
+        size: inputConfig.size || 0,
+        warnings: inputConfig.warnings || [],
+        payloadExpr: inputConfig.payloadExpr || '',
+        inputConfig,
+      },
+      { fingerprint }
+    )
+    : {
+      status: 'ready',
+      fingerprint,
+      mode: inputConfig.mode,
+      target: dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget()),
+      currentPayloadSource: inputConfig.currentPayloadSource || '',
+      resolvedPayloadBytes: inputConfig.resolvedPayloadBytes || [],
+      generatedPwntoolsSnippet: inputConfig.generatedPwntoolsSnippet || inputConfig.generatedSnippet || '',
+      size: inputConfig.size || 0,
+      warnings: inputConfig.warnings || [],
+      payloadExpr: inputConfig.payloadExpr || '',
+      inputConfig,
+    };
+  if ((!previewState.previewAsciiDisplay || previewState.previewAsciiDisplay === '—') && inputConfig.previewAscii) {
+    previewState.previewAsciiDisplay = String(inputConfig.previewAscii);
+  }
+  if ((!previewState.previewHexDisplay || previewState.previewHexDisplay === '—') && inputConfig.previewHex) {
+    previewState.previewHexDisplay = String(inputConfig.previewHex);
+  }
+  dynamicPayloadPreviewState = previewState;
+  renderDynamicPayloadPreview(previewState);
+  debugDynamicPayload('preview', {
+    reason,
+    mode: inputConfig.mode,
+    targetMode: inputConfig.targetMode || getDynamicInputTargetModeForPayload(),
+    size: previewState.size || inputConfig.size || 0,
+    previewHex: inputConfig.previewHex || inputConfig.payloadBytesHex || '',
+    previewAscii: previewState.previewAsciiDisplay || inputConfig.previewAscii || '',
+    warnings: inputConfig.warnings || [],
+  });
+  return previewState;
+}
+
+function ensureDynamicPayloadPreview() {
+  const previewApi = getPayloadPreviewApi();
+  const fingerprint = getDynamicPreviewFingerprint();
+  const isFresh = previewApi?.isPreviewStateFresh
+    ? previewApi.isPreviewStateFresh(dynamicPayloadPreviewState, fingerprint)
+    : !!dynamicPayloadPreviewState && dynamicPayloadPreviewState.status === 'ready' && dynamicPayloadPreviewState.fingerprint === fingerprint;
+  if (isFresh) return dynamicPayloadPreviewState;
+  return resolveDynamicPreviewFromUi();
+}
+
+function refreshDynamicPayloadPreviewAfterSelection(reason = 'selection') {
+  try {
+    return resolveDynamicPreviewFromUi({ reason });
+  } catch (err) {
+    dynamicPayloadPreviewState = createDynamicPreviewState('error', {
+      fingerprint: getDynamicPreviewFingerprint(),
+      error: err.message || String(err),
+    });
+    renderDynamicPayloadPreview(dynamicPayloadPreviewState);
+    debugDynamicPayload('preview-error', {
+      reason,
+      mode: dynamicPayloadMode,
+      error: err.message || String(err),
+    });
+    return null;
   }
 }
 
@@ -1914,14 +2650,13 @@ function renderDynamicTraceHistory() {
 }
 
 function applyRunTraceInit(msg) {
-  const previousArgvPayload = argvPayloadInput?.value ?? '';
+  const previousArgvPayload = payloadBuilderInput?.value ?? '';
   const previousPayloadTargetMode = getDynamicPayloadTargetMode();
   const nextPayloadTargetMode = normalizeDynamicPayloadTargetMode(msg.payloadTargetMode || previousPayloadTargetMode);
   dynamicTraceInitState = {
     archBits: Number(msg.archBits) === 32 ? 32 : 64,
     pie: msg.pie === true,
     sourcePath: String(msg.sourcePath || '').trim(),
-    sourcePathTouched: dynamicTraceInitState.sourcePathTouched === true && !String(msg.sourcePath || '').trim(),
     sourceEnrichmentEnabled: msg.sourceEnrichmentEnabled === true,
     sourceEnrichmentStatus: String(msg.sourceEnrichmentStatus || '').trim(),
     sourceEnrichmentMessage: String(msg.sourceEnrichmentMessage || '').trim(),
@@ -1951,6 +2686,7 @@ function applyRunTraceInit(msg) {
   }
   setDynamicTraceStatus(msg.binaryPath ? 'Prêt.' : 'Sélectionnez un binaire pour lancer la trace.');
   updateArgvPayloadHint();
+  invalidateDynamicPayloadPreview();
   requestDynamicTraceHistory();
 }
 
@@ -2021,32 +2757,8 @@ function ensureDecompileSelectionSourcesLoaded(binaryPath) {
   }
 }
 
-const _DECOMPILER_LABELS = {
-  ghidra:   'Ghidra headless',
-  retdec:   'retdec',
-  angr:     'angr',
-};
-
-const _DECOMPILER_LOCAL_PATH_SPECS = [
-  {
-    id: 'retdec',
-    label: 'retdec',
-    hint: 'Dossier d\'installation ou chemin vers retdec-decompiler',
-    placeholder: '/opt/retdec',
-  },
-  {
-    id: 'ghidra',
-    label: 'Ghidra',
-    hint: 'Dossier d\'installation Ghidra / libexec',
-    placeholder: '/opt/ghidra',
-  },
-  {
-    id: 'angr',
-    label: 'angr',
-    hint: 'Dossier Python à ajouter au PYTHONPATH',
-    placeholder: '/path/to/site-packages',
-  },
-];
+// Local path specs come from decompilers.json via _meta — no hardcoded entries.
+const _DECOMPILER_LOCAL_PATH_SPECS = [];
 
 // Tracks backend availability returned by the backend registry.
 let _decompilerAvailability = {};
@@ -2081,23 +2793,20 @@ function _getLocalPathSpecForDecompiler(id) {
 
 function _describeLocalDetectionHint(id, localSpec, localPathValue) {
   if (!localSpec) return '';
-  if (localPathValue) return 'Le chemin configuré est prioritaire sur l’auto-détection.';
+  if (localPathValue) return "Le chemin configuré est prioritaire sur l'auto-détection.";
   const normalized = String(id || '').trim().toLowerCase();
   if (normalized === 'ghidra') {
-    return 'Auto-détection: GHIDRA_INSTALL_DIR / GHIDRA_HOME, puis emplacements usuels selon l’OS.';
+    return "Auto-détection: GHIDRA_INSTALL_DIR / GHIDRA_HOME, puis emplacements usuels selon l'OS.";
   }
   if (normalized === 'retdec') {
-    return 'Auto-détection: PATH puis RETDEC_INSTALL_DIR.';
+    return "Auto-détection: PATH puis RETDEC_INSTALL_DIR.";
   }
-  if (normalized === 'angr') {
-    return 'Auto-détection: module Python importable dans l’environnement courant.';
-  }
-  return 'Auto-détection via variables d’environnement, PATH et chemins usuels.';
+  return "Auto-détection via variables d'environnement, PATH et chemins usuels.";
 }
 
 function populateDecompilerProfiles(available) {
   const meta = available?._meta || {};
-  const customLabels = meta.custom_labels || {};
+  const labels = meta.labels || {};
   const dockerImages = meta.docker_images || {};
   _decompilerMeta = meta;
   _decompilerAvailability = Object.fromEntries(
@@ -2106,14 +2815,8 @@ function populateDecompilerProfiles(available) {
   const select = document.getElementById('decompileSourceSelect');
   if (!select) return;
   const previous = _getSelectedDecompilerChoice();
-  const entries = Object.keys(_decompilerAvailability)
-    .sort((a, b) => {
-      const builtin = ['ghidra', 'retdec', 'angr'];
-      const ai = builtin.indexOf(a);
-      const bi = builtin.indexOf(b);
-      if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-      return a.localeCompare(b);
-    });
+  // Ordre de déclaration dans decompilers.json (préservé par _load_decompilers)
+  const entries = Object.keys(_decompilerAvailability);
   select.replaceChildren();
   select.appendChild(Object.assign(document.createElement('option'), {
     value: 'auto',
@@ -2121,7 +2824,7 @@ function populateDecompilerProfiles(available) {
   }));
   entries.forEach((id) => {
     const option = document.createElement('option');
-    const label = customLabels[id] || _DECOMPILER_LABELS[id] || id;
+    const label = labels[id] || id;
     const availableNow = !!_decompilerAvailability[id];
     option.value = id;
     option.textContent = availableNow ? label : `${label} indisponible`;
@@ -2553,6 +3256,124 @@ document.getElementById('btnDynamicSelectSource')?.addEventListener('click', () 
   vscode.postMessage({ type: 'hubPickFile', target: 'dynamicSourcePath', fileType: 'sourceC' });
 });
 
+document.getElementById('btnDynamicSelectPayloadFile')?.addEventListener('click', () => {
+  setDynamicTraceStatus('Sélection du fichier payload...');
+  vscode.postMessage({ type: 'hubPickFile', target: 'payloadFileHostPath' });
+});
+
+btnDynamicImportPwntoolsScript?.addEventListener('click', () => {
+  setDynamicTraceStatus('Sélection du script pwntools...');
+  vscode.postMessage({ type: 'hubLoadPwntoolsScript' });
+});
+
+btnAnalyzePwntoolsScript?.addEventListener('click', () => {
+  const scriptContent = String(payloadPwntoolsScriptInput?.value || '');
+  const sourceFileName = dynamicPwntoolsScriptName || 'payload.py';
+  setDynamicTraceStatus('Analyse du script pwntools...');
+  vscode.postMessage({
+    type: 'hubAnalyzePwntoolsScript',
+    scriptContent,
+    sourceFileName,
+    scriptPath: dynamicPwntoolsScriptPath,
+    binaryPath: String(binaryPathInput?.value || '').trim(),
+  });
+});
+
+dynamicPayloadTabs.forEach((tab) => {
+  tab.addEventListener('click', () => {
+    setDynamicPayloadMode(tab.dataset.payloadMode || 'payload_builder');
+    invalidateDynamicPayloadPreview();
+  });
+});
+
+payloadFileSource?.addEventListener('change', () => {
+  updateDynamicPayloadFilePanels();
+  invalidateDynamicPayloadPreview();
+});
+
+exploitHelperTemplate?.addEventListener('change', () => {
+  updateExploitHelperTemplateFields();
+  invalidateDynamicPayloadPreview();
+});
+
+document.getElementById('btnPayloadPreview')?.addEventListener('click', () => {
+  try {
+    const preview = resolveDynamicPreviewFromUi({ reason: 'preview-button' });
+    setDynamicTraceStatus(preview?.warnings?.length ? 'Preview prête avec warning.' : 'Preview prête.');
+  } catch (err) {
+    dynamicPayloadPreviewState = createDynamicPreviewState('error', {
+      fingerprint: getDynamicPreviewFingerprint(),
+      error: err.message || String(err),
+    });
+    renderDynamicPayloadPreview(dynamicPayloadPreviewState);
+    debugDynamicPayload('preview-error', {
+      reason: 'preview-button',
+      mode: dynamicPayloadMode,
+      error: err.message || String(err),
+    });
+    setDynamicTraceStatus('Preview payload invalide.');
+  }
+});
+
+document.getElementById('btnPayloadUseGenerated')?.addEventListener('click', () => {
+  try {
+    const preview = ensureDynamicPayloadPreview();
+    const input = preview?.inputConfig || null;
+    if (input?.mode === 'file') {
+      debugDynamicPayload('use-payload', { mode: input.mode, targetMode: input.targetMode, size: input.size || 0 });
+      setDynamicTraceStatus('Fichier payload prêt pour argv[1].');
+      return;
+    }
+    if (input?.mode === 'payload_builder') {
+      debugDynamicPayload('use-payload', { mode: input.mode, targetMode: input.targetMode, size: input.size || 0, previewHex: input.previewHex || input.payloadBytesHex || '' });
+      setDynamicTraceStatus('Payload Builder déjà prêt.');
+      return;
+    }
+    if (input?.mode === 'pwntools_script') {
+      debugDynamicPayload('use-payload', {
+        mode: input.mode,
+        captureId: input.sourceFields?.captureId || '',
+        targetMode: input.targetMode,
+        size: input.size || 0,
+        previewHex: input.previewHex || input.payloadBytesHex || '',
+      });
+      setDynamicTraceStatus(`Capture pwntools prête pour ${input?.targetMode === 'argv1' ? 'argv[1]' : 'stdin'}.`);
+      return;
+    }
+    setDynamicPayloadMode('payload_builder');
+    setDynamicPayloadBuilderLevel('beginner');
+    if (payloadBuilderInput) payloadBuilderInput.value = input?.payloadExpr || '';
+    updateArgvPayloadHint();
+    invalidateDynamicPayloadPreview();
+    resolveDynamicPreviewFromUi({ reason: 'use-generated-applied' });
+    setDynamicTraceStatus('Payload généré appliqué dans le builder.');
+  } catch (err) {
+    dynamicPayloadPreviewState = createDynamicPreviewState('error', {
+      fingerprint: getDynamicPreviewFingerprint(),
+      error: err.message || String(err),
+    });
+    renderDynamicPayloadPreview(dynamicPayloadPreviewState);
+    setDynamicTraceStatus('Payload généré invalide.');
+  }
+});
+
+document.getElementById('btnPayloadCopyPwntools')?.addEventListener('click', () => {
+  let snippet = '';
+  try {
+    const preview = ensureDynamicPayloadPreview();
+    snippet = preview?.generatedPwntoolsSnippet || '';
+  } catch (err) {
+    dynamicPayloadPreviewState = createDynamicPreviewState('error', {
+      fingerprint: getDynamicPreviewFingerprint(),
+      error: err.message || String(err),
+    });
+    renderDynamicPayloadPreview(dynamicPayloadPreviewState);
+    setDynamicTraceStatus('Snippet pwntools invalide.');
+    return;
+  }
+  if (snippet && navigator.clipboard) navigator.clipboard.writeText(snippet);
+});
+
 btnRefreshDynamicTraceHistory?.addEventListener('click', () => {
   setDynamicTraceStatus('Actualisation des traces...');
   requestDynamicTraceHistory();
@@ -2565,7 +3386,6 @@ btnClearDynamicTraceHistory?.addEventListener('click', () => {
 
 dynamicSourcePathInput?.addEventListener('input', () => {
   dynamicTraceInitState.sourcePath = dynamicSourcePathInput.value.trim();
-  dynamicTraceInitState.sourcePathTouched = true;
   if (!dynamicTraceInitState.sourcePath) {
     dynamicTraceInitState.sourceEnrichmentEnabled = false;
     dynamicTraceInitState.sourceEnrichmentStatus = '';
@@ -2976,7 +3796,7 @@ function getCapaUnsupportedReason() {
     return 'CAPA analyse les exécutables PE et ELF. Le binaire actif est un Mach-O macOS, donc lance plutôt YARA ici ou charge un binaire Linux/Windows pour CAPA.';
   }
   if (format === 'RAW') {
-    return 'CAPA a besoin d’un exécutable PE ou ELF complet. Les blobs bruts restent analysables avec YARA, Hex, Strings et Désassemblage.';
+    return "CAPA a besoin d'un exécutable PE ou ELF complet. Les blobs bruts restent analysables avec YARA, Hex, Strings et Désassemblage.";
   }
   return '';
 }
@@ -4119,7 +4939,7 @@ function renderFuncSimilarityUi(container) {
   if (!funcSimilarityUiState.pendingText && !db && !data) {
     const empty = document.createElement('p');
     empty.className = 'hint';
-    empty.textContent = 'Base non chargée. Utilisez “Rafraîchir la base” ou ajoutez un premier binaire de référence.';
+    empty.textContent = 'Base non chargée. Utilisez "Rafraîchir la base" ou ajoutez un premier binaire de référence.';
     panel.appendChild(empty);
   }
 
@@ -5412,8 +6232,37 @@ form?.addEventListener('submit', (e) => {
     return;
   }
 
+  let inputConfig = null;
+  try {
+    const preview = ensureDynamicPayloadPreview();
+    inputConfig = preview?.inputConfig || null;
+  } catch (err) {
+    dynamicPayloadPreviewState = createDynamicPreviewState('error', {
+      fingerprint: getDynamicPreviewFingerprint(),
+      error: err.message || String(err),
+    });
+    renderDynamicPayloadPreview(dynamicPayloadPreviewState);
+    setDynamicTraceStatus('Payload invalide.');
+    return;
+  }
+  if (inputConfig?.warnings?.some((warning) => /requis|required|cannot carry NUL/i.test(warning))) {
+    renderDynamicPayloadPreview(dynamicPayloadPreviewState);
+    setDynamicTraceStatus('Payload avec warning bloquant.');
+    return;
+  }
+
   if (runBtn) runBtn.disabled = true;
   setDynamicTraceStatus('Trace en cours...');
+  const payloadExpr = inputConfig?.mode === 'file'
+    ? ''
+    : (inputConfig?.payloadExpr || payloadBuilderInput?.value?.trim() || '');
+  debugDynamicPayload('run-trace-submit', {
+    mode: inputConfig?.mode || dynamicPayloadMode,
+    targetMode: inputConfig?.targetMode || getDynamicPayloadTargetMode(),
+    size: inputConfig?.size || 0,
+    payloadBytesHex: inputConfig?.payloadBytesHex || '',
+    payloadExpr,
+  });
   vscode.postMessage({
     type: 'runTrace',
     config: {
@@ -5428,10 +6277,24 @@ form?.addEventListener('submit', (e) => {
       maxSteps: String(dynamicTraceInitState.profile.maxSteps ?? 800),
       startSymbol: String(dynamicTraceInitState.profile.startSymbol || ''),
       stopSymbol: String(dynamicTraceInitState.profile.stopSymbol || ''),
-      injectPayload: !!(argvPayloadInput?.value?.trim()),
-      payloadExpr: argvPayloadInput?.value?.trim() || '',
-      payloadTargetMode: getDynamicPayloadTargetMode(),
-      payloadTarget: getDynamicPayloadTargetMode(),
+      injectPayload: inputConfig?.mode === 'file' ? false : !!(payloadExpr || inputConfig?.payloadBytesHex),
+      payloadExpr,
+      payloadTargetMode: inputConfig?.targetMode || getDynamicPayloadTargetMode(),
+      payloadTarget: inputConfig?.targetMode || getDynamicPayloadTargetMode(),
+      input: inputConfig ? {
+        mode: inputConfig.mode,
+        template: inputConfig.template || inputConfig.sourceFields?.template || '',
+        targetMode: inputConfig.targetMode || getDynamicPayloadTargetMode(),
+        builderLevel: inputConfig.sourceFields?.builderLevel || '',
+        payloadBytesHex: inputConfig.payloadBytesHex || '',
+        sourceFields: inputConfig.sourceFields || {},
+        generatedSnippet: inputConfig.generatedSnippet || '',
+        size: inputConfig.size || 0,
+        previewHex: inputConfig.previewHex || '',
+        previewAscii: inputConfig.previewAscii || '',
+        warnings: inputConfig.warnings || [],
+      } : undefined,
+      file: inputConfig?.file || undefined,
     }
   });
 });
@@ -9975,8 +10838,10 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (msg.type === 'hubDecompilerList') {
-    populateDecompilerProfiles(msg.result || {});
-    _renderDecompilerStatusList(msg.result || {});
+    const newResult = msg.result || {};
+    _detectDecompilerStateChanges(newResult);
+    populateDecompilerProfiles(newResult);
+    _renderDecompilerStatusList(newResult);
     return;
   }
   if (msg.type === 'hubCommandResult') {
@@ -10692,7 +11557,7 @@ window.addEventListener('message', (event) => {
     const status = document.getElementById('hexPatchStatus');
     if (status) {
       status.className = 'hex-patch-status ' + (msg.ok ? 'ok' : 'error');
-      status.textContent = msg.ok ? 'Patch annulé.' : `Error: ${msg.error || 'Impossible d’annuler le patch.'}`;
+      status.textContent = msg.ok ? 'Patch annulé.' : `Error: ${msg.error || "Impossible d'annuler le patch."}`;
     }
     if (msg.ok) {
       const bp = getStaticBinaryPath();
@@ -10759,13 +11624,16 @@ window.addEventListener('message', (event) => {
       input.value = msg.path;
       if (msg.target === 'dynamicSourcePath') {
         dynamicTraceInitState.sourcePath = String(msg.path || '').trim();
-        dynamicTraceInitState.sourcePathTouched = false;
         dynamicTraceInitState.sourceEnrichmentEnabled = false;
         dynamicTraceInitState.sourceEnrichmentStatus = 'pending';
         dynamicTraceInitState.sourceEnrichmentMessage = '';
         if (dynamicSourceHint) dynamicSourceHint.textContent = buildDynamicSourceHintText(dynamicTraceInitState);
         updateArgvPayloadHint();
         requestRunTraceInit(null, binaryPathInput?.value?.trim() || '');
+      }
+      if (msg.target === 'payloadFileHostPath') {
+        setDynamicPayloadMode('file');
+        invalidateDynamicPayloadPreview();
       }
       if (input.closest('#panel-options')) _scheduleSave();
     }
@@ -10808,6 +11676,60 @@ window.addEventListener('message', (event) => {
       editor.value = msg.content;
       _saveStorage({ scriptCode: msg.content });
     }
+    return;
+  }
+
+  if (msg.type === 'hubPwntoolsScriptLoaded') {
+    dynamicPwntoolsScriptPath = String(msg.path || '').trim();
+    dynamicPwntoolsScriptName = String(msg.name || '').trim() || 'payload.py';
+    dynamicPwntoolsAnalysisResult = null;
+    dynamicPwntoolsSelectedCapture = null;
+    if (payloadPwntoolsScriptInput) payloadPwntoolsScriptInput.value = String(msg.content || '');
+    if (payloadPwntoolsSourceLabel) {
+      payloadPwntoolsSourceLabel.textContent = dynamicPwntoolsScriptPath || dynamicPwntoolsScriptName;
+    }
+    if (payloadPwntoolsScriptWarning) payloadPwntoolsScriptWarning.textContent = '';
+    renderPwntoolsCaptureList();
+    updateArgvPayloadHint();
+    invalidateDynamicPayloadPreview();
+    setDynamicPayloadMode('pwntools_script');
+    setDynamicTraceStatus('Script pwntools importé.');
+    return;
+  }
+
+  if (msg.type === 'hubPwntoolsScriptAnalyzed') {
+    dynamicPwntoolsAnalysisResult = msg.result && typeof msg.result === 'object' ? msg.result : null;
+    const entries = getPwntoolsCaptureEntries(dynamicPwntoolsAnalysisResult);
+    const firstEntry = entries[0] || null;
+    dynamicPwntoolsSelectedCapture = firstEntry
+      ? {
+          captureId: firstEntry.id,
+          kind: firstEntry.kind,
+          target: firstEntry.targetHint || 'stdin',
+        }
+      : null;
+    if (payloadPwntoolsScriptWarning) {
+      const warnings = Array.isArray(dynamicPwntoolsAnalysisResult?.warnings)
+        ? dynamicPwntoolsAnalysisResult.warnings
+        : [];
+      const error = String(dynamicPwntoolsAnalysisResult?.error || '').trim();
+      payloadPwntoolsScriptWarning.textContent = [error, ...warnings].filter(Boolean).join(' • ');
+    }
+    renderPwntoolsCaptureList();
+    updateArgvPayloadHint();
+    setDynamicPayloadMode('pwntools_script');
+    if (entries.length) {
+      refreshDynamicPayloadPreviewAfterSelection('pwntools-analyzed-first-capture');
+    } else {
+      invalidateDynamicPayloadPreview();
+    }
+    debugDynamicPayload('pwntools-analyzed', {
+      ok: dynamicPwntoolsAnalysisResult?.ok !== false,
+      captures: entries.length,
+      selectedCapture: dynamicPwntoolsSelectedCapture?.captureId || '',
+      error: dynamicPwntoolsAnalysisResult?.error || '',
+    });
+    setDynamicTraceStatus(entries.length ? 'Captures pwntools prêtes.' : 'Aucun payload capturé.');
     return;
   }
 
@@ -11063,7 +11985,7 @@ window.addEventListener('message', (event) => {
     if (applicable === false) {
       const p = document.createElement('p');
       p.className = 'hint';
-      p.textContent = message || `Cette vue s’applique uniquement aux binaires PE${format ? ` (${format})` : ''}.`;
+      p.textContent = message || `Cette vue s'applique uniquement aux binaires PE${format ? ` (${format})` : ''}.`;
       container.replaceChildren(p);
       return;
     }
@@ -11441,27 +12363,21 @@ function _renderDecompilerStatusList(available) {
   const dockerImages = meta.docker_images || {};
   const dockerAvail  = meta.docker_images_available || {};
   const localAvail = meta.local_available || {};
-  const customLabels = meta.custom_labels || {};
-  const hiddenBuiltins = meta.hidden_builtins || [];
   const localPaths = _settingsCache?.decompilerLocalPaths && typeof _settingsCache.decompilerLocalPaths === 'object'
     ? _settingsCache.decompilerLocalPaths
     : {};
   const activeId = _getActiveDecompilerSource();
 
-  const BUILTIN_ORDER = ['ghidra', 'retdec', 'angr'];
-  const allIds = [
-    ...BUILTIN_ORDER.filter(id => id in available),
-    ...Object.keys(available).filter(id => !id.startsWith('_') && !BUILTIN_ORDER.includes(id)),
-  ];
+  const allIds = Object.keys(available).filter(id => !id.startsWith('_'));
 
   if (_selectedDecompilerCardId && !allIds.includes(_selectedDecompilerCardId)) {
     _selectedDecompilerCardId = '';
   }
   const selectedId = _selectedDecompilerCardId || (activeId !== 'auto' ? activeId : '');
 
-  if (allIds.length === 0 && hiddenBuiltins.length === 0) {
+  if (allIds.length === 0) {
     if (summary) summary.innerHTML = '';
-    container.innerHTML = '<div class="decompiler-status-loading">Aucun décompilateur détecté.</div>';
+    container.innerHTML = '<div class="decompiler-status-loading">Aucun décompilateur configuré. Ajoutez-en un via le bouton "+" ou modifiez .pile-ou-face/decompilers.json.</div>';
     return;
   }
 
@@ -11481,8 +12397,7 @@ function _renderDecompilerStatusList(available) {
 
   const cards = allIds.map(id => {
     const avail = !!available[id];
-    const isCustom = !(BUILTIN_ORDER.includes(id));
-    const label = customLabels[id] || _DECOMPILER_LABELS[id] || id;
+    const label = (meta.labels && meta.labels[id]) || id;
     const image = dockerImages[id] || '';
     const dockerOk = image ? !!dockerAvail[id] : null;
     const localOk = !!localAvail[id];
@@ -11517,7 +12432,7 @@ function _renderDecompilerStatusList(available) {
     const localBadge = `<span class="decompiler-badge ${localStatusClass}">${escapeHtml(localStatus)}</span>`;
     const dockerBadge = `<span class="decompiler-badge ${dockerStatusClass}"${image ? ` title="${escapeHtml(image)}"` : ''}>${escapeHtml(dockerStatus)}</span>`;
 
-    const customTag = isCustom ? ' <span class="decompiler-badge decompiler-badge--custom">custom</span>' : '';
+    const customTag = '';
     const isSelected = id === selectedId;
     const isActiveSource = id === activeId && activeId !== 'auto';
     const pathInputId = localSpec ? `settingDecompilerLocalPath_${id}` : '';
@@ -11550,13 +12465,9 @@ function _renderDecompilerStatusList(available) {
         </div>`
       : '';
 
-    // Boutons d'actions inline dans la card
-    const editBtn = isCustom
-      ? `<button type="button" class="btn btn-secondary btn-xs decompiler-card-btn-edit" data-decompiler-edit="${id}" title="Modifier ${escapeHtml(label)}">✎ Modifier</button>`
-      : '';
-    const hideOrDeleteBtn = isCustom
-      ? `<button type="button" class="btn btn-xs btn-danger-soft decompiler-card-btn-remove" data-decompiler-remove="${id}" title="Supprimer ${escapeHtml(label)}">✕ Supprimer</button>`
-      : '';
+    // Boutons d'actions inline dans la card — tous les décompilateurs sont dans le JSON
+    const editBtn = `<button type="button" class="btn btn-secondary btn-xs decompiler-card-btn-edit" data-decompiler-edit="${id}" title="Modifier ${escapeHtml(label)}">✎ Modifier</button>`;
+    const hideOrDeleteBtn = `<button type="button" class="btn btn-xs btn-danger-soft decompiler-card-btn-remove" data-decompiler-remove="${id}" title="Supprimer ${escapeHtml(label)}">✕ Supprimer</button>`;
 
     return `<article class="decompiler-card${isSelected ? ' decompiler-card--selected' : ''}${isActiveSource ? ' decompiler-card--active' : ''}${avail ? '' : ' decompiler-card--disabled'}" data-select-decompiler="${id}" role="button" tabindex="0" title="Sélectionner ${escapeHtml(label)}" aria-pressed="${isActiveSource ? 'true' : 'false'}">
       <div class="decompiler-card-topline">
@@ -11595,23 +12506,7 @@ function _renderDecompilerStatusList(available) {
     </article>`;
   });
 
-  // Section builtins masqués (restauration)
-  let hiddenSection = '';
-  if (hiddenBuiltins.length > 0) {
-    const hiddenItems = hiddenBuiltins.map(id => {
-      const label = _DECOMPILER_LABELS[id] || id;
-      return `<span class="decompiler-hidden-chip">
-        ${escapeHtml(label)}
-        <button type="button" class="decompiler-hidden-restore" data-decompiler-restore="${id}" title="Restaurer ${escapeHtml(label)}">↩</button>
-      </span>`;
-    }).join('');
-    hiddenSection = `<div class="decompiler-hidden-section">
-      <span class="decompiler-hidden-label">Masqués :</span>
-      ${hiddenItems}
-    </div>`;
-  }
-
-  container.innerHTML = cards.join('') + hiddenSection;
+  container.innerHTML = cards.join('');
   container.querySelectorAll('[data-decompiler-local-toggle]').forEach((button) => {
     _applyDecompilerLocalPathVisibility(
       button.getAttribute('data-decompiler-local-toggle'),
@@ -11633,20 +12528,6 @@ function _renderDecompilerStatusList(available) {
       e.stopPropagation();
       const id = btn.dataset.decompilerRemove;
       vscode.postMessage({ type: 'hubExecuteCommand', command: 'pileOuFace.decompilerRemove', requestId: null, args: [id] });
-    });
-  });
-  container.querySelectorAll('[data-decompiler-hide]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.decompilerHide;
-      vscode.postMessage({ type: 'hubHideBuiltinDecompiler', id });
-    });
-  });
-  container.querySelectorAll('[data-decompiler-restore]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.decompilerRestore;
-      vscode.postMessage({ type: 'hubRestoreBuiltinDecompiler', id });
     });
   });
 }
@@ -11718,6 +12599,96 @@ function _setDecompilerButtonsLocked(locked, exceptBtnId = null) {
   }
 }
 
+// ── Toast system ───────────────────────────────────────────────────────────────
+(function _initToastContainer() {
+  if (document.getElementById('pof-toast-container')) return;
+  const el = document.createElement('div');
+  el.id = 'pof-toast-container';
+  document.body.appendChild(el);
+})();
+
+function _showToast({ title, sub = '', icon = 'ℹ️', variant = 'info', duration = 5000 }) {
+  const container = document.getElementById('pof-toast-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `pof-toast pof-toast--${variant}`;
+  toast.innerHTML = `
+    <span class="pof-toast-icon">${icon}</span>
+    <div class="pof-toast-body">
+      <div class="pof-toast-title">${title}</div>
+      ${sub ? `<div class="pof-toast-sub">${sub}</div>` : ''}
+    </div>
+    <button class="pof-toast-close" title="Fermer">✕</button>
+  `;
+
+  const dismiss = () => {
+    toast.classList.add('pof-toast--out');
+    setTimeout(() => toast.remove(), 350);
+  };
+  toast.querySelector('.pof-toast-close').addEventListener('click', dismiss);
+  container.appendChild(toast);
+  if (duration > 0) setTimeout(dismiss, duration);
+}
+
+// ── Détection changements d'état décompilateurs ───────────────────────────────
+// null = pas encore initialisé (premier chargement = silencieux)
+let _prevDecompilerAvailability = null;
+
+function _detectDecompilerStateChanges(newResult) {
+  const newMeta = newResult._meta || {};
+  const newIds = Object.keys(newResult).filter(k => !k.startsWith('_'));
+  const labels = newMeta.labels || {};
+
+  if (_prevDecompilerAvailability === null) {
+    // Premier chargement — initialiser silencieusement sans toast
+    _prevDecompilerAvailability = Object.fromEntries(
+      newIds.map(id => [id, !!newResult[id]])
+    );
+    return;
+  }
+
+  for (const id of newIds) {
+    const wasAvailable = !!_prevDecompilerAvailability[id];
+    const isAvailable  = !!newResult[id];
+    const wasKnown = id in _prevDecompilerAvailability;
+
+    if (!wasKnown && isAvailable) {
+      // Nouveau décompilateur configuré ET déjà dispo
+      _showToast({
+        title: `${labels[id] || id} ajouté`,
+        sub: 'Décompilateur détecté et prêt',
+        icon: '✅',
+        variant: 'ready',
+        duration: 6000,
+      });
+    } else if (wasKnown && !wasAvailable && isAvailable) {
+      // Était configuré mais indisponible, maintenant prêt
+      _showToast({
+        title: `${labels[id] || id} prêt`,
+        sub: 'Le décompilateur est maintenant disponible',
+        icon: '✅',
+        variant: 'ready',
+        duration: 6000,
+      });
+    } else if (!wasKnown && !isAvailable) {
+      // Nouveau décompilateur configuré mais pas encore disponible
+      _showToast({
+        title: `${labels[id] || id} ajouté`,
+        sub: 'Décompilateur configuré — en attente de disponibilité',
+        icon: '⏳',
+        variant: 'info',
+        duration: 5000,
+      });
+    }
+  }
+
+  // Mettre à jour l'état mémorisé
+  _prevDecompilerAvailability = Object.fromEntries(
+    newIds.map(id => [id, !!newResult[id]])
+  );
+}
+
 // ── Bouton Actualiser ──────────────────────────────────────────────────────────
 document.getElementById('btnDecompilerRefresh')?.addEventListener('click', () => {
   const btn = document.getElementById('btnDecompilerRefresh');
@@ -11760,21 +12731,21 @@ document.getElementById('btnDecompilerAdd')?.addEventListener('click', () => {
 // ── Bouton Modifier ────────────────────────────────────────────────────────────
 document.getElementById('btnDecompilerEdit')?.addEventListener('click', () => {
   const selectedId = _selectedDecompilerCardId || _getActiveDecompilerSource();
-  if (_decompilerMeta?.custom_labels?.[selectedId]) {
+  if (selectedId && selectedId !== 'auto') {
     _runDecompilerCommand('pileOuFace.decompilerEdit', 'btnDecompilerEdit', '…', [selectedId]);
-    return;
+  } else {
+    _runDecompilerCommand('pileOuFace.decompilerEdit', 'btnDecompilerEdit', '…');
   }
-  _runDecompilerCommand('pileOuFace.decompilerEdit', 'btnDecompilerEdit', '…');
 });
 
 // ── Bouton Supprimer ───────────────────────────────────────────────────────────
 document.getElementById('btnDecompilerRemove')?.addEventListener('click', () => {
   const selectedId = _selectedDecompilerCardId || _getActiveDecompilerSource();
-  if (_decompilerMeta?.custom_labels?.[selectedId]) {
+  if (selectedId && selectedId !== 'auto') {
     _runDecompilerCommand('pileOuFace.decompilerRemove', 'btnDecompilerRemove', '…', [selectedId]);
-    return;
+  } else {
+    _runDecompilerCommand('pileOuFace.decompilerRemove', 'btnDecompilerRemove', '…');
   }
-  _runDecompilerCommand('pileOuFace.decompilerRemove', 'btnDecompilerRemove', '…');
 });
 
 // ── Bouton Tester ──────────────────────────────────────────────────────────────
@@ -11837,25 +12808,76 @@ binaryPathInput?.addEventListener('input', () => {
   if (staticBinaryInput) staticBinaryInput.value = binaryPathInput.value;
 });
 
-argvPayloadInput?.addEventListener('input', () => {
+payloadBuilderInput?.addEventListener('input', () => {
+  invalidateDynamicPayloadPreview();
   updateArgvPayloadHint();
-  const raw = argvPayloadInput.value.trim();
+  const raw = payloadBuilderInput.value.trim();
   if (!raw) {
     setDynamicTraceStatus('Prêt.');
     return;
   }
   try {
-    const parsed = parsePayloadExpressionPreview(raw);
-    setDynamicTraceStatus(`${dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget())} prêt: ${parsed.bytes} byte(s).`);
+    const helper = getExploitHelperApi();
+    const parsed = helper?.buildPayload
+      ? helper.buildPayload(raw, dynamicPayloadBuilderLevel, {
+        arch: getDynamicResolvedArch(),
+        endian: exploitHelperEndian?.value || 'little',
+        badchars: exploitHelperBadchars?.value || '',
+        targetMode: getDynamicPayloadTargetMode(),
+      })
+      : { size: parsePayloadExpressionPreview(raw).bytes };
+    setDynamicTraceStatus(`${dynamicPayloadTargetLabel(getDynamicEffectivePayloadTarget())} prêt: ${parsed.size ?? parsed.bytes} byte(s).`);
   } catch (_) {
     setDynamicTraceStatus('Expression payload invalide.');
   }
 });
 
+payloadPwntoolsScriptInput?.addEventListener('input', () => {
+  dynamicPwntoolsAnalysisResult = null;
+  dynamicPwntoolsSelectedCapture = null;
+  if (payloadPwntoolsScriptWarning) payloadPwntoolsScriptWarning.textContent = 'Le script a changé, relance l’analyse.';
+  renderPwntoolsCaptureList();
+  updateArgvPayloadHint();
+  invalidateDynamicPayloadPreview();
+});
+
 dynamicPayloadTargetMode?.addEventListener('change', () => {
   dynamicTraceInitState.payloadTargetMode = getDynamicPayloadTargetMode();
   updateArgvPayloadHint();
+  invalidateDynamicPayloadPreview();
   requestRunTraceInit(null, binaryPathInput?.value?.trim() || '');
+});
+
+[
+  payloadFileGuestPath,
+  payloadFileHostPath,
+  payloadFileContent,
+  exploitHelperArch,
+  exploitHelperEndian,
+  exploitHelperBadchars,
+  document.getElementById('exploitPatternLength'),
+  document.getElementById('exploitPatternCrashedValue'),
+  document.getElementById('exploitOverwriteOffset'),
+  document.getElementById('exploitOverwriteValue'),
+  document.getElementById('exploitOverwriteSize'),
+  document.getElementById('exploitRet2winOffset'),
+  document.getElementById('exploitRet2winAddress'),
+  document.getElementById('exploitRet2winRetGadget'),
+  document.getElementById('exploitCallOffset'),
+  document.getElementById('exploitCallFunctionAddress'),
+  document.getElementById('exploitCallArgument'),
+  document.getElementById('exploitCallReturnAddress'),
+  document.getElementById('exploitCallPopRdi'),
+].filter(Boolean).forEach((field) => {
+  field.addEventListener('input', invalidateDynamicPayloadPreview);
+  field.addEventListener('change', invalidateDynamicPayloadPreview);
+});
+
+payloadBuilderLevelButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    setDynamicPayloadBuilderLevel(button.dataset.payloadBuilderLevel || 'beginner');
+    invalidateDynamicPayloadPreview();
+  });
 });
 
 // Platform
@@ -11873,6 +12895,9 @@ syncToolsBinaryLabel();
 syncStaticWorkspaceSummary();
 renderRecentBinaries();
 updateArgvPayloadHint();
+setDynamicPayloadMode('payload_builder');
+setDynamicPayloadBuilderLevel('beginner');
+invalidateDynamicPayloadPreview();
 const savedOllamaBaseUrl = String(_loadStorage().ollamaBaseUrl || '').trim();
 if (savedOllamaBaseUrl) {
   const baseUrlInput = document.getElementById('ollamaBaseUrl');

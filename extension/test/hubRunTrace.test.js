@@ -1,6 +1,7 @@
 const { expect } = require('chai');
 const fs = require('fs');
 const path = require('path');
+const cp = require('child_process');
 const sinon = require('sinon');
 const proxyquire = require('proxyquire');
 
@@ -196,6 +197,502 @@ describe('hub runTrace isolation', () => {
       .map((call) => call.args[0])
       .filter((message) => message?.type === 'runTraceDone');
     expect(doneMessages).to.have.length(1);
+  });
+
+  it('routes auto payloads to stdin when the C source reads stdin', async () => {
+    existsSyncStub.withArgs('/repo/examples/rootme1.elf').returns(true);
+    existsSyncStub.withArgs('/repo/examples/rootme1.c').returns(true);
+
+    const realReadFileSync = fs.readFileSync.bind(fs);
+    sinon.stub(fs, 'readFileSync').callsFake((targetPath, ...args) => {
+      if (String(targetPath) === '/repo/examples/rootme1.c') {
+        return 'int main(void) { char buf[40]; fgets(buf, 45, stdin); }';
+      }
+      return realReadFileSync(targetPath, ...args);
+    });
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([{ name: 'main' }]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    let capturedArgs = null;
+    runCommand.callsFake(async (_command, args) => {
+      capturedArgs = args;
+      const outputFlagIndex = args.indexOf('--output');
+      const outputPath = outputFlagIndex >= 0 ? args[outputFlagIndex + 1] : '';
+      outputPaths.add(outputPath);
+    });
+    readTraceJson.callsFake((targetPath) => ({
+      snapshots: [{ step: 1, func: 'main' }],
+      risks: [],
+      meta: { output_path: targetPath }
+    }));
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: (input) => String(input || ''),
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'runTrace',
+      config: {
+        traceMode: 'dynamic',
+        useExistingBinary: true,
+        binaryPath: 'examples/rootme1.elf',
+        sourcePath: 'examples/rootme1.c',
+        payloadExpr: 'A*44',
+        payloadTargetMode: 'auto',
+        injectPayload: true
+      }
+    });
+
+    expect(capturedArgs).to.be.an('array');
+    expect(capturedArgs[capturedArgs.indexOf('--stdin') + 1]).to.equal('A*44');
+    expect(capturedArgs).to.not.include('--argv1');
+    expect(writeTraceJson.firstCall.args[1].meta.payload_target).to.equal('stdin');
+    expect(writeTraceJson.firstCall.args[1].meta.payload_label).to.equal('stdin');
+  });
+
+  it('infers sibling C source for auto stdin routing', async () => {
+    existsSyncStub.withArgs('/repo/examples/rootme2.elf').returns(true);
+    existsSyncStub.withArgs('/repo/examples/rootme2.c').returns(true);
+
+    const realReadFileSync = fs.readFileSync.bind(fs);
+    sinon.stub(fs, 'readFileSync').callsFake((targetPath, ...args) => {
+      if (String(targetPath) === '/repo/examples/rootme2.c') {
+        return 'int main(void) { char buffer[256]; scanf("%s", buffer); }';
+      }
+      return realReadFileSync(targetPath, ...args);
+    });
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([{ name: 'main' }]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    let capturedArgs = null;
+    runCommand.callsFake(async (_command, args) => {
+      capturedArgs = args;
+      outputPaths.add(args[args.indexOf('--output') + 1]);
+    });
+    readTraceJson.callsFake((targetPath) => ({
+      snapshots: [{ step: 1, func: 'main' }],
+      risks: [],
+      meta: { output_path: targetPath }
+    }));
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: (input) => String(input || ''),
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'runTrace',
+      config: {
+        traceMode: 'dynamic',
+        useExistingBinary: true,
+        binaryPath: 'examples/rootme2.elf',
+        payloadExpr: 'A*264',
+        payloadTargetMode: 'auto',
+        injectPayload: true
+      }
+    });
+
+    expect(capturedArgs).to.include('--stdin');
+    expect(capturedArgs[capturedArgs.indexOf('--stdin') + 1]).to.equal('A*264');
+    expect(capturedArgs).to.not.include('--argv1');
+    expect(writeTraceJson.firstCall.args[1].meta.payload_target).to.equal('stdin');
+  });
+
+  it('passes generated payload bytes through stdin-hex and persists input meta', async () => {
+    existsSyncStub.withArgs('/repo/examples/rootme1.elf').returns(true);
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([{ name: 'main' }]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    let capturedArgs = null;
+    runCommand.callsFake(async (_command, args) => {
+      capturedArgs = args;
+      const outputPath = args[args.indexOf('--output') + 1];
+      outputPaths.add(outputPath);
+    });
+    readTraceJson.callsFake((targetPath) => ({
+      snapshots: [{ step: 1, func: 'main' }],
+      risks: [],
+      meta: { output_path: targetPath }
+    }));
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: () => '',
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'runTrace',
+      config: {
+        traceMode: 'dynamic',
+        useExistingBinary: true,
+        binaryPath: 'examples/rootme1.elf',
+        payloadExpr: '\\x41\\x42\\x43\\x44',
+        payloadTargetMode: 'stdin',
+        injectPayload: true,
+        input: {
+          mode: 'exploit_helper',
+          template: 'overwrite_variable',
+          targetMode: 'stdin',
+          payloadBytesHex: '41424344',
+          sourceFields: { offset: '0', value: '0x44434241' },
+          generatedSnippet: 'payload = b"ABCD"',
+          size: 4,
+          previewHex: '41424344',
+          previewAscii: 'ABCD',
+          warnings: []
+        }
+      }
+    });
+
+    expect(capturedArgs).to.include('--stdin-hex');
+    expect(capturedArgs[capturedArgs.indexOf('--stdin-hex') + 1]).to.equal('41424344');
+    const writtenTrace = writeTraceJson.firstCall.args[1];
+    expect(writtenTrace.meta.input.mode).to.equal('exploit_helper');
+    expect(writtenTrace.meta.input.template).to.equal('overwrite_variable');
+    expect(writtenTrace.meta.input.previewHex).to.equal('41424344');
+  });
+
+  it('accepts payload_builder mode and keeps builder metadata', async () => {
+    existsSyncStub.withArgs('/repo/examples/rootme1.elf').returns(true);
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([{ name: 'main' }]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    let capturedArgs = null;
+    runCommand.callsFake(async (_command, args) => {
+      capturedArgs = args;
+      const outputPath = args[args.indexOf('--output') + 1];
+      outputPaths.add(outputPath);
+    });
+    readTraceJson.callsFake((targetPath) => ({
+      snapshots: [{ step: 1, func: 'main' }],
+      risks: [],
+      meta: { output_path: targetPath }
+    }));
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: () => '',
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'runTrace',
+      config: {
+        traceMode: 'dynamic',
+        useExistingBinary: true,
+        binaryPath: 'examples/rootme1.elf',
+        payloadExpr: '\\x41\\x41\\x41\\x41\\x41\\x41\\x41\\x41',
+        payloadTargetMode: 'stdin',
+        injectPayload: true,
+        input: {
+          mode: 'payload_builder',
+          targetMode: 'stdin',
+          payloadBytesHex: '4141414141414141',
+          sourceFields: { input: 'A*8', builderLevel: 'beginner' },
+          generatedSnippet: 'from pwn import *\npayload = b"A" * 8',
+          size: 8,
+          previewHex: '4141414141414141',
+          previewAscii: 'AAAAAAAA',
+          warnings: []
+        }
+      }
+    });
+
+    expect(capturedArgs).to.include('--stdin-hex');
+    expect(capturedArgs[capturedArgs.indexOf('--stdin-hex') + 1]).to.equal('4141414141414141');
+    const writtenTrace = writeTraceJson.firstCall.args[1];
+    expect(writtenTrace.meta.input.mode).to.equal('payload_builder');
+    expect(writtenTrace.meta.input.builderLevel).to.equal('beginner');
+    expect(writtenTrace.meta.input.sourceFields.input).to.equal('A*8');
+  });
+
+  it('accepts pwntools_script mode and keeps capture metadata', async () => {
+    existsSyncStub.withArgs('/repo/examples/rootme1.elf').returns(true);
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([{ name: 'main' }]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    let capturedArgs = null;
+    runCommand.callsFake(async (_command, args) => {
+      capturedArgs = args;
+      const outputPath = args[args.indexOf('--output') + 1];
+      outputPaths.add(outputPath);
+    });
+    readTraceJson.callsFake((targetPath) => ({
+      snapshots: [{ step: 1, func: 'main' }],
+      risks: [],
+      meta: { output_path: targetPath }
+    }));
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: () => '',
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'runTrace',
+      config: {
+        traceMode: 'dynamic',
+        useExistingBinary: true,
+        binaryPath: 'examples/rootme1.elf',
+        payloadTargetMode: 'stdin',
+        injectPayload: true,
+        input: {
+          mode: 'pwntools_script',
+          targetMode: 'stdin',
+          payloadBytesHex: '4142430a',
+          sourceFileName: 'solve.py',
+          selectedCaptureKind: 'sendlineafter',
+          target: 'stdin',
+          sourceFields: { captureId: 'cap-1' },
+          generatedSnippet: 'from pwn import *\nio.sendline(payload)',
+          size: 4,
+          previewHex: '4142430a',
+          previewAscii: 'ABC.',
+          warnings: []
+        }
+      }
+    });
+
+    expect(capturedArgs).to.include('--stdin-hex');
+    expect(capturedArgs[capturedArgs.indexOf('--stdin-hex') + 1]).to.equal('4142430a');
+    const writtenTrace = writeTraceJson.firstCall.args[1];
+    expect(writtenTrace.meta.input.mode).to.equal('pwntools_script');
+    expect(writtenTrace.meta.input.sourceFileName).to.equal('solve.py');
+    expect(writtenTrace.meta.input.selectedCaptureKind).to.equal('sendlineafter');
+  });
+
+  it('passes file mode as argv1 plus virtual-file mapping', async () => {
+    existsSyncStub.withArgs('/repo/examples/my_vm1').returns(true);
+    existsSyncStub.withArgs('/repo/input.vm').returns(true);
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([{ name: 'main' }]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    let capturedArgs = null;
+    runCommand.callsFake(async (_command, args) => {
+      capturedArgs = args;
+      const outputPath = args[args.indexOf('--output') + 1];
+      outputPaths.add(outputPath);
+    });
+    readTraceJson.callsFake((targetPath) => ({
+      snapshots: [{ step: 1, func: 'main' }],
+      risks: [],
+      meta: { output_path: targetPath, virtual_file_warnings: [] }
+    }));
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: () => '',
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'runTrace',
+      config: {
+        traceMode: 'dynamic',
+        useExistingBinary: true,
+        binaryPath: 'examples/my_vm1',
+        input: {
+          mode: 'file',
+          targetMode: 'argv1',
+          sourceFields: { source: 'path', guestPath: '/tmp/pof-input.txt', hostPath: '/repo/input.vm' },
+          size: 0,
+          warnings: []
+        },
+        file: {
+          source: 'path',
+          guestPath: '/tmp/pof-input.txt',
+          hostPath: '/repo/input.vm',
+          passAs: 'argv1'
+        }
+      }
+    });
+
+    expect(capturedArgs).to.include('--argv1');
+    expect(capturedArgs[capturedArgs.indexOf('--argv1') + 1]).to.equal('/tmp/pof-input.txt');
+    expect(capturedArgs).to.include('--virtual-file');
+    expect(capturedArgs[capturedArgs.indexOf('--virtual-file') + 1]).to.equal('/tmp/pof-input.txt=/repo/input.vm');
+    const writtenTrace = writeTraceJson.firstCall.args[1];
+    expect(writtenTrace.meta.input.mode).to.equal('file');
+    expect(writtenTrace.meta.input.file.guestPath).to.equal('/tmp/pof-input.txt');
   });
 
   it('lists and deletes historical trace artifacts without touching output.json', async () => {
