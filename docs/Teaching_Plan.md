@@ -22,8 +22,8 @@ By the end, students should understand:
 python3 -m venv backends/.venv
 source backends/.venv/bin/activate
 pip install -r requirements.txt
-pip install unicorn
 ```
+OU un make install suffit !
 
 Open VS Code and use:
 - `Stack Visualizer: Run Trace...`
