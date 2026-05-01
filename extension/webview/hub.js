@@ -1758,7 +1758,7 @@ function buildDynamicSourceHintText({
   const message = String(sourceEnrichmentMessage || '').trim();
   const status = String(sourceEnrichmentStatus || '').trim();
 
-  if (message) return message;
+  if (normalizedPath && message) return message;
   if (sourceEnrichmentEnabled && normalizedPath) return 'Code source détecté — analyse enrichie activée.';
   if (normalizedPath && status === 'missing') return 'Code source fourni introuvable ; analyse binaire seule.';
   if (normalizedPath) return `Code source sélectionné — enrichissement prêt au prochain run.`;

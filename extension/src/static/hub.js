@@ -25,7 +25,6 @@ const {
   symbolLookupCandidates,
 } = require('../shared/symbols');
 const {
-  detectPayloadTargetFromSourceText,
   normalizePayloadTargetMode,
   payloadTargetLabel,
   resolvePayloadTarget,
@@ -274,19 +273,6 @@ function createHub(config) {
       const relPath = path.relative(root, absolutePath);
       return relPath.startsWith('..') ? absolutePath : relPath;
     };
-    const inferSourcePathForBinary = (binaryPath = '') => {
-      const requestedBinaryPath = String(binaryPath || '').trim();
-      if (!requestedBinaryPath) return '';
-      const absoluteBinaryPath = resolvePathFromWorkspace(requestedBinaryPath);
-      const parsed = path.parse(absoluteBinaryPath);
-      const baseName = parsed.name.replace(/\.elf$/i, '');
-      const candidates = [
-        path.join(parsed.dir, `${baseName}.c`),
-        path.join(root, 'examples', `${baseName}.c`),
-      ];
-      const found = candidates.find((candidate) => fs.existsSync(candidate));
-      return found ? toWebviewPath(found) : '';
-    };
     const readSourceTextForPayloadTarget = (sourcePath = '') => {
       const requestedSourcePath = String(sourcePath || '').trim();
       if (!requestedSourcePath) return '';
@@ -298,13 +284,12 @@ function createHub(config) {
         return '';
       }
     };
-    const buildPayloadTargetPreview = ({ sourcePath = '', mode = 'auto' } = {}) => {
+    const buildPayloadTargetPreview = ({ sourcePath = '', mode = 'auto', binarySymbols = [] } = {}) => {
       const sourceText = readSourceTextForPayloadTarget(sourcePath);
-      const auto = detectPayloadTargetFromSourceText(sourceText);
-      const resolved = resolvePayloadTarget({ mode, sourceText });
+      const resolved = resolvePayloadTarget({ mode, sourceText, binarySymbols });
       return {
         payloadTargetMode: normalizePayloadTargetMode(mode),
-        payloadTargetAuto: auto.target,
+        payloadTargetAuto: resolved.autoTarget,
         payloadTargetEffective: resolved.target,
         payloadTargetReason: resolved.reason
       };
@@ -1278,8 +1263,10 @@ function createHub(config) {
         return false;
       };
       const loadBinaryHeaders = async (binaryPath) => runPythonJson(getHeadersScript(root), ['--binary', binaryPath]);
-      const loadBinarySymbols = async (binaryPath) => {
-        const rawSymbols = await runPythonJson(getSymbolsScript(root), ['--binary', binaryPath]).catch(() => []);
+      const loadBinarySymbols = async (binaryPath, { includeAll = false } = {}) => {
+        const args = ['--binary', binaryPath];
+        if (includeAll) args.push('--all');
+        const rawSymbols = await runPythonJson(getSymbolsScript(root), args).catch(() => []);
         return Array.isArray(rawSymbols) ? rawSymbols : (rawSymbols.symbols || []);
       };
       const collectSymbolNames = (symbols) => {
@@ -1353,6 +1340,7 @@ function createHub(config) {
 
         const info = await loadBinaryHeaders(absoluteBinaryPath).catch(() => ({}));
         const symbols = await loadBinarySymbols(absoluteBinaryPath);
+        const inputSymbols = await loadBinarySymbols(absoluteBinaryPath, { includeAll: true });
         const sameBinaryTrace = (() => {
           const previousBinary = String(latestTrace?.meta?.binary || '').trim();
           if (!previousBinary) return null;
@@ -1390,26 +1378,37 @@ function createHub(config) {
           ...(typeof preset?.payloadExpr === 'string' ? { argvPayload: preset.payloadExpr } : {})
         };
 
-        const inferredSourcePath = inferSourcePathForBinary(absoluteBinaryPath);
         const selectedSourcePath = String(
           forcedSourcePath
           || preset?.sourcePath
-          || sameBinaryTrace?.meta?.source
-          || sameBinaryTrace?.meta?.source_enrichment?.sourcePath
-          || inferredSourcePath
           || ''
         ).trim();
+        const previousSourcePath = String(
+          sameBinaryTrace?.meta?.source_enrichment?.sourcePath
+          || sameBinaryTrace?.meta?.source
+          || ''
+        ).trim();
+        const selectedMatchesPreviousSource = Boolean(selectedSourcePath && previousSourcePath)
+          && path.normalize(resolvePathFromWorkspace(selectedSourcePath))
+            === path.normalize(resolvePathFromWorkspace(previousSourcePath));
         const payloadTargetPreview = buildPayloadTargetPreview({
           sourcePath: selectedSourcePath,
-          mode: requestedPayloadTargetMode
+          mode: requestedPayloadTargetMode,
+          binarySymbols: inputSymbols
         });
 
         return {
           binaryPath: toWebviewPath(absoluteBinaryPath),
           sourcePath: selectedSourcePath,
-          sourceEnrichmentEnabled: sameBinaryTrace?.meta?.source_enrichment?.enabled === true,
-          sourceEnrichmentStatus: String(sameBinaryTrace?.meta?.source_enrichment?.status || '').trim(),
-          sourceEnrichmentMessage: String(sameBinaryTrace?.meta?.source_enrichment?.message || '').trim(),
+          sourceEnrichmentEnabled: selectedMatchesPreviousSource
+            ? sameBinaryTrace?.meta?.source_enrichment?.enabled === true
+            : false,
+          sourceEnrichmentStatus: selectedMatchesPreviousSource
+            ? String(sameBinaryTrace?.meta?.source_enrichment?.status || '').trim()
+            : '',
+          sourceEnrichmentMessage: selectedMatchesPreviousSource
+            ? String(sameBinaryTrace?.meta?.source_enrichment?.message || '').trim()
+            : '',
           ...payloadTargetPreview,
           archBits,
           pie: inferPie(info, sameBinaryTrace),
@@ -2991,10 +2990,12 @@ function createHub(config) {
           const payloadTargetMode = normalizePayloadTargetMode(
             inputMeta.targetMode || payload.payloadTargetMode || payload.payloadTarget || 'auto'
           );
-          const effectiveSourcePath = sourcePath || inferSourcePathForBinary(binaryOutPath);
+          const effectiveSourcePath = sourcePath;
+          const inputSymbols = await loadBinarySymbols(binaryOutPath, { includeAll: true });
           const payloadTargetResolution = resolvePayloadTarget({
             mode: payloadTargetMode,
-            sourceText: readSourceTextForPayloadTarget(effectiveSourcePath)
+            sourceText: readSourceTextForPayloadTarget(effectiveSourcePath),
+            binarySymbols: inputSymbols
           });
           const payloadTarget = stagedInputFile ? 'argv1' : payloadTargetResolution.target;
           const inputPayloadHex = inputMeta.payloadBytesHex;
