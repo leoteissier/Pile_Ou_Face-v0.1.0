@@ -133,6 +133,70 @@ class TestTracerScanf(unittest.TestCase):
         self.assertEqual(state["stdin_pos"], 7)
         self.assertEqual(len(state["current_external_event"]["writes"]), 2)
 
+    def test_snprintf_writes_truncated_format_string_to_destination(self):
+        uc = _FakeUc()
+        dst_addr = 0x120
+        fmt_addr = 0x240
+        sp = 0x300
+
+        uc.mem_write(fmt_addr, b"AAAAAAAAAA\x00")
+        _write_u32(uc, sp + 0, dst_addr)
+        _write_u32(uc, sp + 4, 8)
+        _write_u32(uc, sp + 8, fmt_addr)
+
+        state = {
+            "current_external_event": {"reads": [], "writes": []},
+        }
+
+        written = _simulate_symbol_with_args(
+            uc,
+            32,
+            "snprintf",
+            sp,
+            4,
+            state,
+        )
+
+        self.assertEqual(written, 10)
+        self.assertEqual(uc.mem_read(dst_addr, 8), b"AAAAAAA\x00")
+        self.assertEqual(
+            state["current_external_event"]["writes"],
+            [
+                {
+                    "addr": hex(dst_addr),
+                    "size": 8,
+                    "bytes": "41 41 41 41 41 41 41 00",
+                    "source": "external",
+                }
+            ],
+        )
+
+    def test_sprintf_collapses_escaped_percent_in_destination(self):
+        uc = _FakeUc()
+        dst_addr = 0x120
+        fmt_addr = 0x240
+        sp = 0x300
+
+        uc.mem_write(fmt_addr, b"AA%%BB\x00")
+        _write_u32(uc, sp + 0, dst_addr)
+        _write_u32(uc, sp + 4, fmt_addr)
+
+        state = {
+            "current_external_event": {"reads": [], "writes": []},
+        }
+
+        written = _simulate_symbol_with_args(
+            uc,
+            32,
+            "sprintf",
+            sp,
+            4,
+            state,
+        )
+
+        self.assertEqual(written, 5)
+        self.assertEqual(uc.mem_read(dst_addr, 6), b"AA%BB\x00")
+
 
 if __name__ == "__main__":
     unittest.main()

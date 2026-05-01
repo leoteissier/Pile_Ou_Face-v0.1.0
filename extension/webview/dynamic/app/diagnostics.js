@@ -4,6 +4,7 @@
  */
 
 const SEVERITY_RANK = {
+  success: -1,
   error: 0,
   warning: 1,
   info: 2
@@ -13,6 +14,9 @@ const KIND_REGISTERS = {
   return_address_corrupted: ['rip', 'eip', 'rsp', 'esp', 'rbp', 'ebp'],
   saved_bp_corrupted: ['rbp', 'ebp'],
   invalid_control_flow: ['rip', 'eip', 'rsp', 'esp', 'rbp', 'ebp'],
+  fatal_crash: ['rip', 'eip', 'rsp', 'esp', 'rbp', 'ebp'],
+  control_hijack: ['rip', 'eip', 'rsp', 'esp', 'rbp', 'ebp'],
+  ret2win_success: ['rip', 'eip'],
   runtime_crash: ['rip', 'eip', 'rsp', 'esp', 'rbp', 'ebp']
 };
 
@@ -29,15 +33,36 @@ export function crashDiagnosticForStep(crash, step) {
   if (!Number.isFinite(crashStep) || crashStep !== Number(step)) return null;
   const instructionText = String(crash.instructionText || '').trim().toLowerCase();
   const crashType = String(crash.type || '').trim().toLowerCase();
-  const kind = crashType === 'unmapped_fetch'
-    || instructionText.startsWith('ret')
-    || instructionText.startsWith('jmp')
-    || instructionText.startsWith('call')
-    ? 'invalid_control_flow'
-    : 'runtime_crash';
+  const classification = String(crash.classification || '').trim().toLowerCase();
+
+  let kind, severity, confidence;
+  if (classification === 'ret2win_success') {
+    kind = 'ret2win_success';
+    severity = 'success';
+    confidence = 0.99;
+  } else if (classification === 'control_hijack') {
+    kind = 'control_hijack';
+    severity = 'warning';
+    confidence = 0.92;
+  } else {
+    kind = crashType === 'unmapped_fetch'
+      || instructionText.startsWith('ret')
+      || instructionText.startsWith('jmp')
+      || instructionText.startsWith('call')
+      ? 'invalid_control_flow'
+      : 'runtime_crash';
+    severity = 'error';
+    confidence = kind === 'invalid_control_flow' ? 0.96 : 0.88;
+  }
+
+  const afterValue = (classification === 'ret2win_success' || classification === 'control_hijack')
+    ? (crash.retTarget || crash.memoryAddress || crash.rip || crash.eip || null)
+    : (crash.memoryAddress || crash.rip || crash.eip || null);
+
   return {
-    severity: 'error',
+    severity,
     kind,
+    classification: classification || null,
     step: crashStep,
     function: crash.function || null,
     instructionAddress: crash.instructionAddress || null,
@@ -45,13 +70,14 @@ export function crashDiagnosticForStep(crash, step) {
     message: crash.reason || 'Crash runtime.',
     slot: crash.suspectOverwrittenSlot || null,
     before: null,
-    after: crash.memoryAddress || crash.rip || crash.eip || null,
+    after: afterValue,
     bytes: crash.suspectBytes || '',
     probableSource: crash.probableSource || null,
     payloadOffset: crash.payloadOffset,
-    confidence: kind === 'invalid_control_flow' ? 0.96 : 0.88,
+    confidence,
     registers: crash.registers && typeof crash.registers === 'object' ? crash.registers : {},
     crashType: crashType || null,
+    retTarget: crash.retTarget || null,
   };
 }
 
@@ -66,7 +92,7 @@ export function mergeCrashDiagnostic(diagnostics, crash, step) {
   const alreadyPresent = current.some((diagnostic) => {
     const sameAddress = crashAddress !== null
       && parseAddress(diagnostic?.instructionAddress) === crashAddress;
-    return sameAddress && ['runtime_crash', 'invalid_control_flow'].includes(String(diagnostic?.kind || ''));
+    return sameAddress && ['runtime_crash', 'invalid_control_flow', 'ret2win_success', 'control_hijack', 'fatal_crash'].includes(String(diagnostic?.kind || ''));
   });
   return (alreadyPresent ? current : [crashDiagnostic, ...current]).sort(compareDiagnostics);
 }
@@ -133,6 +159,12 @@ export function diagnosticKindLabel(kind) {
       return 'Debordement de buffer';
     case 'invalid_control_flow':
       return 'Flux de controle invalide';
+    case 'fatal_crash':
+      return 'Crash fatal';
+    case 'control_hijack':
+      return 'Detournement de flot de controle';
+    case 'ret2win_success':
+      return 'Acces a la fonction cible';
     case 'runtime_crash':
       return 'Crash runtime';
     default:

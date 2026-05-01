@@ -165,6 +165,37 @@ def _strlen_at(uc, src: int, max_len: int = 0x20000) -> Optional[int]:
     return None
 
 
+def _read_c_string_bytes(uc, addr: int, max_len: int = 0x2000) -> Optional[bytes]:
+    if addr == 0:
+        return None
+    size = _strlen_at(uc, addr, max_len=max_len)
+    if size is None:
+        return None
+    return _safe_read_bytes(uc, addr, size)
+
+
+def _render_simple_printf_bytes(format_bytes: bytes) -> bytes:
+    if b"%" not in format_bytes:
+        return format_bytes
+
+    out = bytearray()
+    i = 0
+    while i < len(format_bytes):
+        byte = format_bytes[i]
+        if byte != 0x25:
+            out.append(byte)
+            i += 1
+            continue
+        if i + 1 < len(format_bytes) and format_bytes[i + 1] == 0x25:
+            out.append(0x25)
+            i += 2
+            continue
+        # Full printf varargs emulation is intentionally out of scope here.
+        # Keeping the raw payload visible is more useful than dropping the write.
+        return format_bytes
+    return bytes(out)
+
+
 def _strcasecmp_at(uc, lhs: int, rhs: int) -> Optional[int]:
     left = _read_c_string_from_memory(uc, lhs)
     right = _read_c_string_from_memory(uc, rhs)
@@ -238,12 +269,9 @@ def _consume_stdin_line(state: dict, max_len: int) -> bytes:
 def _read_c_string_from_memory(
     uc, addr: int, max_len: int = 0x2000
 ) -> Optional[str]:
-    if addr == 0:
+    raw = _read_c_string_bytes(uc, addr, max_len=max_len)
+    if raw is None:
         return None
-    size = _strlen_at(uc, addr, max_len=max_len)
-    if size is None:
-        return None
-    raw = _safe_read_bytes(uc, addr, size)
     return raw.decode("utf-8", errors="replace")
 
 
@@ -921,6 +949,45 @@ def _simulate_symbol_with_args(
         )
         mark()
         return dst
+
+    if key in {"sprintf", "snprintf", "__sprintf_chk", "__snprintf_chk"}:
+        dst = arg(0)
+        if dst is None:
+            return None
+        if key == "__snprintf_chk":
+            n = arg(1)
+            fmt_addr = arg(4)
+        elif key == "snprintf":
+            n = arg(1)
+            fmt_addr = arg(2)
+        elif key == "__sprintf_chk":
+            n = None
+            fmt_addr = arg(3)
+        else:
+            n = None
+            fmt_addr = arg(1)
+        if fmt_addr is None:
+            return None
+        fmt_bytes = _read_c_string_bytes(uc, fmt_addr)
+        if fmt_bytes is None:
+            return None
+        rendered = _render_simple_printf_bytes(fmt_bytes)
+        if n is None:
+            write_limit = len(rendered) + 1
+        else:
+            write_limit = min(max(0, int(n)), 0x20000)
+        payload = b""
+        if write_limit > 0:
+            payload = rendered[: max(0, write_limit - 1)] + b"\x00"
+            try:
+                uc.mem_write(dst, payload)
+            except UcError:
+                return None
+        _record_external_access(state, "reads", fmt_addr, len(fmt_bytes) + 1)
+        if payload:
+            _record_external_access(state, "writes", dst, len(payload), payload)
+        mark()
+        return len(rendered)
 
     if key in {"strdup"}:
         src = arg(0)

@@ -1,6 +1,7 @@
 const { expect } = require('chai');
 
 const {
+  detectPayloadTargetFromBinarySymbols,
   detectPayloadTargetFromSourceText,
   payloadTargetLabel,
   resolvePayloadTarget,
@@ -56,6 +57,29 @@ describe('dynamic input target helpers', () => {
 
     expect(detected.target).to.equal('argv1');
     expect(detected.fallback).to.equal(true);
+  });
+
+  it('detects stdin from binary imports when no C source is available', () => {
+    const detected = detectPayloadTargetFromBinarySymbols([
+      { name: 'main', type: 'T' },
+      { name: '__isoc23_scanf@GLIBC_2.38', type: 'U' }
+    ]);
+
+    expect(detected.target).to.equal('stdin');
+    expect(detected.reason).to.contain('scanf import');
+    expect(detected.fallback).to.equal(false);
+  });
+
+  it('uses binary imports as the auto target when source has no evidence', () => {
+    const resolved = resolvePayloadTarget({
+      mode: 'auto',
+      sourceText: '',
+      binarySymbols: [{ name: '__isoc99_scanf', type: 'U' }]
+    });
+
+    expect(resolved.target).to.equal('stdin');
+    expect(resolved.autoTarget).to.equal('stdin');
+    expect(resolved.reason).to.contain('scanf import');
   });
 
   it('honors manual overrides over auto-detection', () => {

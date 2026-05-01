@@ -313,6 +313,11 @@ body.dynamic-view {
   background: rgba(211, 179, 90, 0.1);
 }
 
+.explain-section-success {
+  border-color: rgba(80, 200, 140, 0.5);
+  background: rgba(80, 200, 140, 0.1);
+}
+
 /* ==========================================================================
    Disassembly
    ========================================================================== */
@@ -501,6 +506,10 @@ body.dynamic-view {
 .stack-mode-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+#stackModeAdvanced {
+  display: none;
 }
 
 .stack-summary {

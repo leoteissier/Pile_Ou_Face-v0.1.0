@@ -22,8 +22,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from backends.dynamic.core.interfaces import ExecutionEngine, TraceConfigLike
-from backends.dynamic.pipeline.diagnostics import build_diagnostics
-from backends.dynamic.pipeline.stack_model import build_dynamic_analysis
+from backends.dynamic.pipeline.diagnostics import _is_win_addr, build_diagnostics
+from backends.dynamic.pipeline.stack_model import _hex, build_dynamic_analysis
 from backends.static.disasm.disasm import disassemble_with_capstone
 
 try:
@@ -263,6 +263,23 @@ def _guess_crash_slot(crash: dict, analysis: dict, meta: dict, disasm_lines: lis
     return None, None, None
 
 
+def _classify_crash(
+    fault_addr: int | None,
+    ret_target: int | None,
+    ip_after: int | None,
+    meta: dict,
+    code_ranges: list[tuple[int, int]],
+) -> str:
+    target = ret_target if ret_target is not None else (fault_addr if fault_addr is not None else ip_after)
+    if target is None:
+        return "fatal_crash"
+    if _is_win_addr(target, meta):
+        return "ret2win_success"
+    if _is_code_address(target, code_ranges):
+        return "control_hijack"
+    return "fatal_crash"
+
+
 def _build_crash_report(
     raw_crash: dict | None,
     snapshots: list[dict],
@@ -310,6 +327,20 @@ def _build_crash_report(
         and payload_offset is None
     ):
         return None
+    # Determine what the return slot was overwritten to (for classification).
+    ret_target: int | None = None
+    if suspect_slot and str(suspect_slot.get("kind") or "").strip().lower() == "return_address" and analysis:
+        ret_slot_data = _analysis_slot(analysis, "return_address")
+        if ret_slot_data:
+            ret_target = _parse_int(_slot_value_text(ret_slot_data, analysis, "return_address"))
+    code_ranges = _build_code_ranges(meta, disasm_lines or [])
+    classification = _classify_crash(
+        fault_addr=fault_address,
+        ret_target=ret_target,
+        ip_after=ip_after,
+        meta=meta,
+        code_ranges=code_ranges,
+    )
     function_meta = analysis.get("function") if isinstance(analysis, dict) and isinstance(analysis.get("function"), dict) else {}
     return {
         "type": crash_type,
@@ -334,6 +365,8 @@ def _build_crash_report(
         "suspectBytes": suspect_bytes,
         "payloadOffset": payload_offset,
         "probableSource": _trace_probable_source(meta),
+        "classification": classification,
+        "retTarget": _hex(ret_target) if ret_target is not None else None,
     }
 
 

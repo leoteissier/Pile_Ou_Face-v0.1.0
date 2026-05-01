@@ -14,6 +14,27 @@ from backends.dynamic.pipeline.stack_model import (
 
 CONTROL_FLOW_MNEMONICS = {"ret", "jmp", "call"}
 
+_WIN_NAMES = frozenset({
+    "win", "pwn", "pwn_func", "get_flag", "getflag", "shell", "print_flag",
+    "cat_flag", "exploit", "victory", "flag",
+})
+
+
+def _is_win_addr(addr: int | None, meta: dict) -> bool:
+    if addr is None:
+        return False
+    functions = meta.get("functions") if isinstance(meta.get("functions"), list) else []
+    for fn in functions:
+        if not isinstance(fn, dict):
+            continue
+        fn_addr = _parse_int(fn.get("addr"))
+        if fn_addr != addr:
+            continue
+        name = str(fn.get("name") or "").lower().strip().lstrip("_")
+        if any(w in name for w in _WIN_NAMES):
+            return True
+    return False
+
 
 def build_diagnostics(
     snapshots: list[dict],
@@ -247,6 +268,40 @@ def _diagnose_invalid_control_flow(
     if target == before_ip and mnemonic != "ret":
         return []
     if _is_code_address(target, code_ranges) and not _looks_like_user_pattern(target):
+        if _overflow_reaches(analysis, "return_address"):
+            if _is_win_addr(target, meta):
+                kind = "ret2win_success"
+                severity = "success"
+                msg = f"Retour vers {_hex(target)} — adresse de retour detournee vers la fonction cible"
+                conf = 0.97
+            else:
+                kind = "control_hijack"
+                severity = "warning"
+                msg = f"{ip_name.upper()} detourne vers une adresse executable apres {mnemonic}"
+                conf = 0.90
+            bytes_hex = _value_bytes_hex(target, _word_size(meta))
+            regs_inner = {
+                name: _hex(after_regs.get(name))
+                for name in ("rip", "eip", "rsp", "esp", "rbp", "ebp")
+                if after_regs.get(name) is not None
+            }
+            return [_clean_diag({
+                "severity": severity,
+                "kind": kind,
+                "step": step,
+                "function": _function_name(snapshot, analysis),
+                "instructionAddress": _instruction_address(snapshot),
+                "responsibleInstructionAddress": _instruction_address(snapshot),
+                "message": msg,
+                "slot": _slot_for_invalid_flow(analysis, target),
+                "before": _hex(before_ip),
+                "after": _hex(target),
+                "bytes": bytes_hex,
+                "probableSource": _probable_source(snapshot, meta),
+                "payloadOffset": _payload_offset(meta, bytes_hex),
+                "confidence": conf,
+                "registers": regs_inner,
+            })]
         return []
 
     regs = {
@@ -302,21 +357,51 @@ def _diagnose_crash(
     slot = crash.get("suspectOverwrittenSlot") if isinstance(crash.get("suspectOverwrittenSlot"), dict) else None
     slot_kind = str(slot.get("kind") or "").strip().lower() if isinstance(slot, dict) else ""
     function_meta = analysis.get("function") if isinstance(analysis.get("function"), dict) else {}
-    kind = (
-        "invalid_control_flow"
-        if crash_type == "unmapped_fetch"
-        or instruction_text.startswith("ret")
-        or instruction_text.startswith("jmp")
-        or instruction_text.startswith("call")
-        or (ip_value is not None and not _is_code_address(ip_value, code_ranges))
-        else "runtime_crash"
-    )
+    classification = str(crash.get("classification") or "").strip().lower()
+
+    if classification == "ret2win_success":
+        kind = "ret2win_success"
+        severity = "success"
+        confidence = 0.99
+        ret_target = str(crash.get("retTarget") or crash.get("memoryAddress") or crash.get(ip_name) or "").strip() or None
+        message = f"Acces a la fonction cible ({ret_target or 'adresse inconnue'}) via detournement de l'adresse de retour"
+    elif classification == "control_hijack":
+        kind = "control_hijack"
+        severity = "warning"
+        confidence = 0.92
+        ret_target = str(crash.get("retTarget") or crash.get("memoryAddress") or crash.get(ip_name) or "").strip() or None
+        message = f"Adresse de retour detournee vers une zone executable ({ret_target or 'adresse inconnue'})"
+    else:
+        kind = (
+            "invalid_control_flow"
+            if crash_type == "unmapped_fetch"
+            or instruction_text.startswith("ret")
+            or instruction_text.startswith("jmp")
+            or instruction_text.startswith("call")
+            or (ip_value is not None and not _is_code_address(ip_value, code_ranges))
+            else "runtime_crash"
+        )
+        if slot_kind == "return_address" and kind != "invalid_control_flow":
+            kind = "runtime_crash"
+        severity = "error"
+        confidence = 0.96 if kind == "invalid_control_flow" else 0.88
+        ret_target = None
+        message = str(crash.get("reason") or "Crash runtime Unicorn.").strip()
+
     bytes_hex = str(crash.get("suspectBytes") or "").strip()
-    if not bytes_hex and ip_value is not None and kind == "invalid_control_flow":
+    if not bytes_hex and ip_value is not None and kind in ("invalid_control_flow", "fatal_crash"):
         bytes_hex = _value_bytes_hex(ip_value, _word_size(meta))
+
+    after_value = (
+        str(crash.get("retTarget") or "").strip() or None
+        if classification in ("ret2win_success", "control_hijack")
+        else str(crash.get("memoryAddress") or crash.get(ip_name) or registers.get(ip_name) or "").strip() or None
+    )
+
     diag = {
-        "severity": "error",
+        "severity": severity,
         "kind": kind,
+        "classification": classification or None,
         "step": step,
         "function": str(
             crash.get("function")
@@ -326,25 +411,17 @@ def _diagnose_crash(
         or None,
         "instructionAddress": str(crash.get("instructionAddress") or "").strip() or None,
         "responsibleInstructionAddress": str(crash.get("instructionAddress") or "").strip() or None,
-        "message": str(crash.get("reason") or "Crash runtime Unicorn.").strip(),
+        "message": message,
         "slot": slot,
         "before": None,
-        "after": str(
-            crash.get("memoryAddress")
-            or crash.get(ip_name)
-            or registers.get(ip_name)
-            or ""
-        ).strip()
-        or None,
+        "after": after_value,
         "bytes": bytes_hex,
         "probableSource": str(crash.get("probableSource") or _probable_source({}, meta)).strip() or None,
         "payloadOffset": crash.get("payloadOffset"),
-        "confidence": 0.96 if kind == "invalid_control_flow" else 0.88,
+        "confidence": confidence,
         "registers": registers,
         "crashType": crash_type or None,
     }
-    if slot_kind == "return_address" and kind != "invalid_control_flow":
-        diag["kind"] = "runtime_crash"
     return [_clean_diag(diag)]
 
 

@@ -281,17 +281,90 @@ describe('hub runTrace isolation', () => {
     expect(writeTraceJson.firstCall.args[1].meta.payload_label).to.equal('stdin');
   });
 
-  it('infers sibling C source for auto stdin routing', async () => {
+  it('does not restore a previous C source into runTrace init automatically', async () => {
     existsSyncStub.withArgs('/repo/examples/rootme2.elf').returns(true);
-    existsSyncStub.withArgs('/repo/examples/rootme2.c').returns(true);
+    outputPaths.add('/tmp/pof/output.json');
 
     const realReadFileSync = fs.readFileSync.bind(fs);
     sinon.stub(fs, 'readFileSync').callsFake((targetPath, ...args) => {
-      if (String(targetPath) === '/repo/examples/rootme2.c') {
-        return 'int main(void) { char buffer[256]; scanf("%s", buffer); }';
+      if (String(targetPath) === '/tmp/pof/output.json') {
+        return JSON.stringify({
+          snapshots: [],
+          risks: [],
+          meta: {
+            binary: 'examples/rootme2.elf',
+            source: 'examples/rootme2.c',
+            source_enrichment: {
+              sourcePath: 'examples/rootme2.c',
+              enabled: true,
+              status: 'partial',
+              message: 'Code source détecté — enrichissement partiel.'
+            }
+          }
+        });
       }
       return realReadFileSync(targetPath, ...args);
     });
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([
+          { name: 'main', type: 'T' },
+          { name: '__isoc23_scanf@GLIBC_2.38', type: 'U' }
+        ]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: (input) => String(input || ''),
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'requestRunTraceInit',
+      binaryPath: 'examples/rootme2.elf',
+      sourcePath: '',
+      payloadTargetMode: 'auto'
+    });
+
+    const initMessage = panel.webview.postMessage.lastCall.args[0];
+    expect(initMessage.type).to.equal('initRunTrace');
+    expect(initMessage.sourcePath).to.equal('');
+    expect(initMessage.sourceEnrichmentEnabled).to.equal(false);
+    expect(initMessage.sourceEnrichmentMessage).to.equal('');
+    expect(initMessage.payloadTargetEffective).to.equal('stdin');
+    expect(initMessage.payloadTargetReason).to.contain('scanf import');
+  });
+
+  it('does not auto-select a sibling C source for payload target routing', async () => {
+    existsSyncStub.withArgs('/repo/examples/rootme2.elf').returns(true);
+    existsSyncStub.withArgs('/repo/examples/rootme2.c').returns(true);
 
     sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
       const script = String(args?.[0] || '');
@@ -353,10 +426,84 @@ describe('hub runTrace isolation', () => {
       }
     });
 
+    expect(capturedArgs).to.include('--argv1');
+    expect(capturedArgs[capturedArgs.indexOf('--argv1') + 1]).to.equal('A*264');
+    expect(capturedArgs[capturedArgs.indexOf('--stdin') + 1]).to.equal('');
+    expect(writeTraceJson.firstCall.args[1].meta.payload_target).to.equal('argv1');
+  });
+
+  it('routes auto payloads to stdin from binary imports without C source', async () => {
+    existsSyncStub.withArgs('/repo/examples/rootme2.elf').returns(true);
+    existsSyncStub.withArgs('/repo/examples/rootme2.c').returns(true);
+
+    sinon.stub(cp, 'execFile').callsFake((_cmd, args, _opts, callback) => {
+      const script = String(args?.[0] || '');
+      if (script.includes('headers')) {
+        callback(null, JSON.stringify({ format: 'ELF', bits: 64, type: 'EXEC' }));
+        return;
+      }
+      if (script.includes('symbols')) {
+        callback(null, JSON.stringify([
+          { name: 'main', type: 'T' },
+          { name: '__isoc23_scanf@GLIBC_2.38', type: 'U' }
+        ]));
+        return;
+      }
+      callback(null, '{}');
+    });
+
+    let capturedArgs = null;
+    runCommand.callsFake(async (_command, args) => {
+      capturedArgs = args;
+      outputPaths.add(args[args.indexOf('--output') + 1]);
+    });
+    readTraceJson.callsFake((targetPath) => ({
+      snapshots: [{ step: 1, func: 'main' }],
+      risks: [],
+      meta: { output_path: targetPath }
+    }));
+
+    const openHub = createHub({
+      context: {
+        extensionUri: {},
+        subscriptions: [],
+        workspaceState: { get: () => ({}), update: async () => {} },
+        globalState: { get: () => ({}), update: async () => {} }
+      },
+      logChannel: { appendLine: () => {}, append: () => {} },
+      getTempDir: () => '/tmp/pof',
+      ensureTempDir: () => '/tmp/pof',
+      runCommand,
+      detectPythonExecutable: () => '/usr/bin/python3',
+      ensureStaticAsm,
+      readTraceJson,
+      writeTraceJson,
+      setViewMode: () => {},
+      payloadToHex: () => '',
+      parseStdinExpression: (input) => String(input || ''),
+      check32BitToolchain: () => ({ ok: true }),
+      openVisualizerWebview
+    });
+
+    openHub();
+
+    await onMessage({
+      type: 'runTrace',
+      config: {
+        traceMode: 'dynamic',
+        useExistingBinary: true,
+        binaryPath: 'examples/rootme2.elf',
+        payloadExpr: 'A*264',
+        payloadTargetMode: 'auto',
+        injectPayload: true
+      }
+    });
+
     expect(capturedArgs).to.include('--stdin');
     expect(capturedArgs[capturedArgs.indexOf('--stdin') + 1]).to.equal('A*264');
     expect(capturedArgs).to.not.include('--argv1');
     expect(writeTraceJson.firstCall.args[1].meta.payload_target).to.equal('stdin');
+    expect(writeTraceJson.firstCall.args[1].meta.payload_target_reason).to.contain('scanf import');
   });
 
   it('passes generated payload bytes through stdin-hex and persists input meta', async () => {

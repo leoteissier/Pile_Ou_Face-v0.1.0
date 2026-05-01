@@ -42,16 +42,24 @@ export function renderExplain(snap, prevSnap, regMap = {}, prevRegMap = {}, meta
 
 function buildSections(snap, meta, analysis, mcp, diagnostics = [], crash = null) {
   const diagnostic = primaryDiagnostic(diagnostics);
+  const classification = crash && typeof crash === 'object'
+    ? String(crash.classification || '').trim().toLowerCase()
+    : '';
   const crashSection = crash && typeof crash === 'object'
-    ? {
-        label: 'CRASH DETECTE',
-        text: buildCrashText(crash),
-        severity: 'error'
-      }
+    ? classification === 'ret2win_success'
+      ? { label: 'ACCES CIBLE', text: buildRetWinText(crash), severity: 'success' }
+      : classification === 'control_hijack'
+      ? { label: 'DETOURNEMENT', text: buildCrashText(crash), severity: 'warning' }
+      : { label: 'CRASH DETECTE', text: buildCrashText(crash), severity: 'error' }
     : null;
-  const diagnosticSection = diagnostic
+  const suppressDiagnostic = diagnostic
+    && classification === 'ret2win_success'
+    && String(diagnostic.kind || '') === 'ret2win_success';
+  const diagnosticSection = diagnostic && !suppressDiagnostic
     ? {
-        label: diagnostic.severity === 'error' ? 'ERREUR' : 'AVERTISSEMENT',
+        label: diagnostic.severity === 'error' ? 'ERREUR'
+          : diagnostic.severity === 'success' ? 'SUCCES'
+          : 'AVERTISSEMENT',
         text: buildDiagnosticText(diagnostic),
         severity: diagnostic.severity || 'warning'
       }
@@ -112,16 +120,38 @@ function buildSections(snap, meta, analysis, mcp, diagnostics = [], crash = null
   return [crashSection, diagnosticSection, ...sections].filter(Boolean);
 }
 
+function tryDecodeAsText(hexAddr) {
+  const text = String(hexAddr || '').trim().replace(/^0x/i, '');
+  if (!text || text.length % 2 !== 0) return null;
+  let result = '';
+  for (let i = 0; i < text.length; i += 2) {
+    const byte = parseInt(text.slice(i, i + 2), 16);
+    if (byte === 0) continue;
+    if (byte < 0x20 || byte > 0x7e) return null;
+    result += String.fromCharCode(byte);
+  }
+  return result.length >= 2 ? result : null;
+}
+
+function addrWithDecode(hexAddr) {
+  const addr = String(hexAddr || '').trim();
+  if (!addr) return null;
+  const decoded = tryDecodeAsText(addr);
+  return decoded ? `${addr} ("${decoded}")` : addr;
+}
+
 function buildDiagnosticText(diagnostic) {
   const bits = [
     diagnosticKindLabel(diagnostic.kind),
     diagnostic.message
   ].filter(Boolean);
   if (diagnostic.before || diagnostic.after) {
-    bits.push(`avant ${diagnostic.before || 'n/a'} -> apres ${diagnostic.after || 'n/a'}`);
+    const b = addrWithDecode(diagnostic.before) || 'n/a';
+    const a = addrWithDecode(diagnostic.after) || 'n/a';
+    bits.push(`avant ${b} -> apres ${a}`);
   }
   if (diagnostic.probableSource) {
-    bits.push(`source probable: ${diagnostic.probableSource}`);
+    bits.push(`source: ${diagnostic.probableSource}`);
   }
   if (Number.isFinite(Number(diagnostic.payloadOffset))) {
     bits.push(`offset payload: ${diagnostic.payloadOffset}`);
@@ -133,21 +163,50 @@ function buildDiagnosticText(diagnostic) {
 }
 
 function buildCrashText(crash) {
+  const retTarget = String(crash?.retTarget || '').trim();
+  const faultAddr = String(crash?.memoryAddress || '').trim();
   const bits = [
     String(crash?.reason || '').trim(),
-    String(crash?.type || '').trim() ? `type: ${crash.type}` : '',
-    String(crash?.instructionAddress || '').trim() ? `instr: ${crash.instructionAddress}` : '',
-    String(crash?.instructionText || '').trim() || '',
-    String(crash?.memoryAddress || '').trim() ? `adresse fautive: ${crash.memoryAddress}` : '',
-    String(crash?.probableSource || '').trim() ? `source probable: ${crash.probableSource}` : '',
+    String(crash?.instructionText || '').trim() ? `instruction: ${crash.instructionText}` : '',
+    String(crash?.instructionAddress || '').trim() ? `@ ${crash.instructionAddress}` : '',
+    faultAddr ? `adresse fautive: ${addrWithDecode(faultAddr) || faultAddr}` : '',
+    String(crash?.probableSource || '').trim() ? `source: ${crash.probableSource}` : '',
     Number.isFinite(Number(crash?.payloadOffset)) ? `offset payload: ${crash.payloadOffset}` : '',
     crash?.suspectOverwrittenSlot?.kind
-      ? `slot suspect: ${crash.suspectOverwrittenSlot.kind} ${crash.suspectOverwrittenSlot.offset || ''}`.trim()
+      ? `slot: ${crash.suspectOverwrittenSlot.kind}${crash.suspectOverwrittenSlot.offset ? ' ' + crash.suspectOverwrittenSlot.offset : ''}`
       : '',
     crash?.registers && typeof crash.registers === 'object'
       ? ['rip', 'eip', 'rsp', 'esp', 'rbp', 'ebp']
         .filter((name) => crash.registers[name])
-        .map((name) => `${name.toUpperCase()}=${crash.registers[name]}`)
+        .map((name) => {
+          const val = String(crash.registers[name] || '');
+          const decoded = tryDecodeAsText(val);
+          return `${name.toUpperCase()}=${val}${decoded ? ` ("${decoded}")` : ''}`;
+        })
+        .join(' • ')
+      : ''
+  ].filter(Boolean);
+  void retTarget;
+  return bits.join(' • ');
+}
+
+function buildRetWinText(crash) {
+  const target = String(crash?.retTarget || crash?.memoryAddress || crash?.rip || crash?.eip || '').trim();
+  const bits = [
+    `L'adresse de retour a ete detournee vers ${addrWithDecode(target) || 'une fonction cible'}.`,
+    String(crash?.probableSource || '').trim() ? `Source: ${crash.probableSource}` : '',
+    Number.isFinite(Number(crash?.payloadOffset)) ? `Offset dans le payload: ${crash.payloadOffset}` : '',
+    crash?.suspectOverwrittenSlot?.kind === 'return_address'
+      ? `Slot: adresse de retour${crash.suspectOverwrittenSlot.offset ? ' ' + crash.suspectOverwrittenSlot.offset : ''}`
+      : '',
+    crash?.registers && typeof crash.registers === 'object'
+      ? ['rip', 'eip']
+        .filter((name) => crash.registers[name])
+        .map((name) => {
+          const val = String(crash.registers[name] || '');
+          const decoded = tryDecodeAsText(val);
+          return `${name.toUpperCase()}=${val}${decoded ? ` ("${decoded}")` : ''}`;
+        })
         .join(' • ')
       : ''
   ].filter(Boolean);

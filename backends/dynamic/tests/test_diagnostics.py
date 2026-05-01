@@ -378,5 +378,173 @@ class TestDynamicDiagnostics(unittest.TestCase):
         self.assertEqual(diagnostics, [])
 
 
+class TestCrashClassification(unittest.TestCase):
+    def _make_overflow_analysis(self, ret_value):
+        analysis = _base_analysis(ret_value)
+        analysis["frame"]["slots"][2].update(
+            {
+                "valueHex": ret_value,
+                "bytesHex": _hex_bytes(bytes.fromhex(ret_value.replace("0x", "").zfill(16))[::-1]),
+                "recentWrite": True,
+                "changed": True,
+                "flags": ["corrupted"],
+                "pointerKind": "unknown",
+            }
+        )
+        analysis["overflow"] = {
+            "active": True,
+            "bufferName": "buffer",
+            "reached": ["saved_bp", "return_address"],
+            "frontier": "0x7fffffffe010",
+            "controlRisk": "return_address",
+        }
+        analysis["delta"]["writes"] = [
+            {
+                "addr": "0x7fffffffdfc0",
+                "size": 80,
+                "bytes": _hex_bytes(b"A" * 80),
+                "source": "external",
+            }
+        ]
+        return analysis
+
+    def test_fatal_crash_aaaa_payload(self):
+        analysis = self._make_overflow_analysis("0x4141414141414141")
+        meta = {
+            "arch_bits": 64,
+            "word_size": 8,
+            "payload_hex": _hex_bytes(b"A" * 80),
+            "payload_target": "stdin",
+            "functions": [],
+        }
+        crash = _build_crash_report(
+            {
+                "type": "unmapped_fetch",
+                "step": 1,
+                "instructionAddress": "0x401050",
+                "instructionText": "ret",
+                "registers": {"rip": "0x4141414141414141", "rsp": "0x7fffffffdf80", "rbp": "0x7fffffffe000"},
+                "rip": "0x4141414141414141",
+                "faultAddress": "0x4141414141414141",
+                "reason": "Retour vers une adresse non mappee.",
+            },
+            [_snapshot(step=1, instr="ret", mnemonic="ret", after_rip="0x4141414141414141")],
+            {"1": analysis},
+            meta,
+            [{"addr": "0x401000"}, {"addr": "0x401100"}],
+        )
+        self.assertIsNotNone(crash)
+        self.assertEqual(crash["classification"], "fatal_crash")
+
+    def test_control_hijack_code_address(self):
+        # Return address overwritten to a code address (not a win symbol)
+        analysis = self._make_overflow_analysis("0x401050")
+        analysis["frame"]["slots"][2]["pointerKind"] = "code"
+        meta = {
+            "arch_bits": 64,
+            "word_size": 8,
+            "payload_hex": _hex_bytes(b"A" * 72 + b"\x50\x10\x40\x00\x00\x00\x00\x00"),
+            "payload_target": "stdin",
+            "functions": [{"name": "helper", "addr": "0x401050", "type": "T", "size": "0x30"}],
+        }
+        crash = _build_crash_report(
+            {
+                "type": "unmapped_fetch",
+                "step": 1,
+                "instructionAddress": "0x401020",
+                "instructionText": "ret",
+                "registers": {"rip": "0x401050", "rsp": "0x7fffffffdf80", "rbp": "0x7fffffffe000"},
+                "rip": "0x401050",
+                "faultAddress": "0x401050",
+                "reason": "Retour vers une zone executable.",
+            },
+            [_snapshot(step=1, instr="ret", mnemonic="ret", after_rip="0x401050")],
+            {"1": analysis},
+            meta,
+            [{"addr": "0x401000"}, {"addr": "0x401100"}],
+        )
+        self.assertIsNotNone(crash)
+        self.assertEqual(crash["classification"], "control_hijack")
+
+    def test_ret2win_success_classification(self):
+        win_addr = "0x401234"
+        analysis = self._make_overflow_analysis(win_addr)
+        analysis["frame"]["slots"][2]["pointerKind"] = "code"
+        meta = {
+            "arch_bits": 64,
+            "word_size": 8,
+            "payload_hex": _hex_bytes(b"A" * 72 + b"\x34\x12\x40\x00\x00\x00\x00\x00"),
+            "payload_target": "stdin",
+            "functions": [{"name": "win", "addr": win_addr, "type": "T", "size": "0x20"}],
+        }
+        crash = _build_crash_report(
+            {
+                "type": "unmapped_fetch",
+                "step": 1,
+                "instructionAddress": "0x401020",
+                "instructionText": "ret",
+                "registers": {"rip": win_addr, "rsp": "0x7fffffffdf80", "rbp": "0x7fffffffe000"},
+                "rip": win_addr,
+                "faultAddress": win_addr,
+                "reason": "Retour vers win().",
+            },
+            [_snapshot(step=1, instr="ret", mnemonic="ret", after_rip=win_addr)],
+            {"1": analysis},
+            meta,
+            [{"addr": "0x401000"}, {"addr": "0x401300"}],
+        )
+        self.assertIsNotNone(crash)
+        self.assertEqual(crash["classification"], "ret2win_success")
+        self.assertEqual(crash["retTarget"], win_addr)
+
+    def test_ret2win_diagnostic_severity_is_success(self):
+        win_addr = "0x401234"
+        analysis = self._make_overflow_analysis(win_addr)
+        analysis["frame"]["slots"][2]["pointerKind"] = "code"
+        snap = _snapshot(step=1, instr="ret", mnemonic="ret", after_rip=win_addr)
+        snap["instruction"]["address"] = "0x401020"
+        snap["cpu"]["before"]["registers"]["rip"] = "0x401020"
+        meta = {
+            "arch_bits": 64,
+            "word_size": 8,
+            "payload_hex": _hex_bytes(b"A" * 72 + b"\x34\x12\x40\x00\x00\x00\x00\x00"),
+            "payload_target": "stdin",
+            "functions": [{"name": "win", "addr": win_addr, "type": "T", "size": "0x20"}],
+        }
+        diagnostics = build_diagnostics(
+            [snap],
+            {"1": analysis},
+            meta,
+            [{"addr": "0x401000"}, {"addr": "0x401300"}],
+        )
+        success_diags = [d for d in diagnostics if d.get("kind") == "ret2win_success"]
+        self.assertTrue(len(success_diags) >= 1)
+        self.assertEqual(success_diags[0]["severity"], "success")
+
+    def test_control_hijack_diagnostic_severity_is_warning(self):
+        target_addr = "0x401050"
+        analysis = self._make_overflow_analysis(target_addr)
+        analysis["frame"]["slots"][2]["pointerKind"] = "code"
+        snap = _snapshot(step=1, instr="ret", mnemonic="ret", after_rip=target_addr)
+        snap["instruction"]["address"] = "0x401020"
+        snap["cpu"]["before"]["registers"]["rip"] = "0x401020"
+        meta = {
+            "arch_bits": 64,
+            "word_size": 8,
+            "payload_hex": _hex_bytes(b"A" * 72 + b"\x50\x10\x40\x00\x00\x00\x00\x00"),
+            "payload_target": "stdin",
+            "functions": [{"name": "helper", "addr": target_addr, "type": "T", "size": "0x30"}],
+        }
+        diagnostics = build_diagnostics(
+            [snap],
+            {"1": analysis},
+            meta,
+            [{"addr": "0x401000"}, {"addr": "0x401100"}],
+        )
+        hijack_diags = [d for d in diagnostics if d.get("kind") == "control_hijack"]
+        self.assertTrue(len(hijack_diags) >= 1)
+        self.assertEqual(hijack_diags[0]["severity"], "warning")
+
+
 if __name__ == "__main__":
     unittest.main()

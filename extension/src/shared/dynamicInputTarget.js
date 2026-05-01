@@ -88,9 +88,71 @@ function detectPayloadTargetFromSourceText(sourceText) {
   };
 }
 
-function resolvePayloadTarget({ mode = 'auto', sourceText = '' } = {}) {
+function normalizeBinarySymbolName(name) {
+  return String(name || '')
+    .trim()
+    .split('@')[0]
+    .replace(/^_+/, '')
+    .toLowerCase();
+}
+
+function detectPayloadTargetFromBinarySymbols(symbols = []) {
+  const stdinEvidence = [];
+  const entries = Array.isArray(symbols) ? symbols : [];
+  const addEvidence = (label) => {
+    if (!stdinEvidence.includes(label)) stdinEvidence.push(label);
+  };
+
+  entries.forEach((entry) => {
+    const name = normalizeBinarySymbolName(
+      typeof entry === 'string' ? entry : entry?.name
+    );
+    if (!name) return;
+
+    if (/^(?:isoc\d+_)?scanf(?:_s)?$/.test(name)) addEvidence('scanf import');
+    if (/^vscanf(?:_s)?$/.test(name)) addEvidence('vscanf import');
+    if (/^gets(?:_s)?$/.test(name)) addEvidence('gets import');
+    if (/^getchar(?:_unlocked)?$/.test(name)) addEvidence('getchar import');
+  });
+
+  const evidence = {
+    stdin: stdinEvidence,
+    argv1: []
+  };
+
+  if (stdinEvidence.length > 0) {
+    return {
+      target: 'stdin',
+      reason: `stdin detecte via ${stdinEvidence.join(', ')}`,
+      evidence,
+      fallback: false
+    };
+  }
+
+  return {
+    target: 'argv1',
+    reason: 'aucun import stdin clair, fallback sur argv[1]',
+    evidence,
+    fallback: true
+  };
+}
+
+function pickAutoPayloadTarget(sourceAuto, binaryAuto) {
+  if (sourceAuto && sourceAuto.fallback === false) return sourceAuto;
+  if (binaryAuto && binaryAuto.fallback === false) return binaryAuto;
+  return sourceAuto || binaryAuto || {
+    target: 'argv1',
+    reason: 'aucune source claire, fallback sur argv[1]',
+    evidence: { stdin: [], argv1: [] },
+    fallback: true
+  };
+}
+
+function resolvePayloadTarget({ mode = 'auto', sourceText = '', binarySymbols = [] } = {}) {
   const normalizedMode = normalizePayloadTargetMode(mode);
-  const auto = detectPayloadTargetFromSourceText(sourceText);
+  const sourceAuto = detectPayloadTargetFromSourceText(sourceText);
+  const binaryAuto = detectPayloadTargetFromBinarySymbols(binarySymbols);
+  const auto = pickAutoPayloadTarget(sourceAuto, binaryAuto);
 
   if (normalizedMode !== 'auto') {
     return {
@@ -116,6 +178,7 @@ function resolvePayloadTarget({ mode = 'auto', sourceText = '' } = {}) {
 }
 
 module.exports = {
+  detectPayloadTargetFromBinarySymbols,
   detectPayloadTargetFromSourceText,
   normalizeEffectivePayloadTarget,
   normalizePayloadTargetMode,
