@@ -1218,7 +1218,13 @@ function createHub(config) {
         ])
       );
 
-      const buildRunTraceInit = async (forcedBinaryPath = '', preset = null, forcedSourcePath = '', payloadTargetMode = 'auto') => {
+      const buildRunTraceInit = async (
+        forcedBinaryPath = '',
+        preset = null,
+        forcedSourcePath = '',
+        payloadTargetMode = 'auto',
+        sourcePathExplicitlyCleared = false
+      ) => {
         const requestedPayloadTargetMode = normalizePayloadTargetMode(preset?.payloadTargetMode || payloadTargetMode);
         const latestTrace = loadLatestTrace();
         const traceBinary = String(latestTrace?.meta?.binary || '').trim();
@@ -1298,8 +1304,8 @@ function createHub(config) {
         const selectedSourcePath = String(
           forcedSourcePath
           || preset?.sourcePath
-          || sameBinaryTrace?.meta?.source
-          || sameBinaryTrace?.meta?.source_enrichment?.sourcePath
+          || (sourcePathExplicitlyCleared ? '' : sameBinaryTrace?.meta?.source)
+          || (sourcePathExplicitlyCleared ? '' : sameBinaryTrace?.meta?.source_enrichment?.sourcePath)
           || ''
         ).trim();
         const payloadTargetPreview = buildPayloadTargetPreview({
@@ -1310,9 +1316,9 @@ function createHub(config) {
         return {
           binaryPath: toWebviewPath(absoluteBinaryPath),
           sourcePath: selectedSourcePath,
-          sourceEnrichmentEnabled: sameBinaryTrace?.meta?.source_enrichment?.enabled === true,
-          sourceEnrichmentStatus: String(sameBinaryTrace?.meta?.source_enrichment?.status || '').trim(),
-          sourceEnrichmentMessage: String(sameBinaryTrace?.meta?.source_enrichment?.message || '').trim(),
+          sourceEnrichmentEnabled: !sourcePathExplicitlyCleared && sameBinaryTrace?.meta?.source_enrichment?.enabled === true,
+          sourceEnrichmentStatus: sourcePathExplicitlyCleared ? '' : String(sameBinaryTrace?.meta?.source_enrichment?.status || '').trim(),
+          sourceEnrichmentMessage: sourcePathExplicitlyCleared ? '' : String(sameBinaryTrace?.meta?.source_enrichment?.message || '').trim(),
           ...payloadTargetPreview,
           archBits,
           pie: inferPie(info, sameBinaryTrace),
@@ -2600,7 +2606,8 @@ function createHub(config) {
           message.binaryPath || '',
           message.preset || null,
           message.sourcePath || '',
-          message.payloadTargetMode || 'auto'
+          message.payloadTargetMode || 'auto',
+          message.sourcePathExplicitlyCleared === true
         );
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         return;
@@ -2657,7 +2664,8 @@ function createHub(config) {
           message.binaryPath || '',
           null,
           message.sourcePath || '',
-          message.payloadTargetMode || 'auto'
+          message.payloadTargetMode || 'auto',
+          message.sourcePathExplicitlyCleared === true
         );
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         return;
@@ -2674,7 +2682,13 @@ function createHub(config) {
         const binaryPath = binaryUri[0].fsPath;
         const pathForWebview = toWebviewPath(binaryPath);
         panel.webview.postMessage({ type: 'hubSetBinaryPath', binaryPath: pathForWebview });
-        const initPayload = await buildRunTraceInit(pathForWebview, null, message.sourcePath || '', message.payloadTargetMode || 'auto');
+        const initPayload = await buildRunTraceInit(
+          pathForWebview,
+          null,
+          message.sourcePath || '',
+          message.payloadTargetMode || 'auto',
+          message.sourcePathExplicitlyCleared === true
+        );
         panel.webview.postMessage({ type: 'initRunTrace', ...initPayload });
         if (refreshSidebar) refreshSidebar(pathForWebview);
         return;

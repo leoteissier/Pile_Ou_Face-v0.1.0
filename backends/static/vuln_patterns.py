@@ -18,6 +18,12 @@ _log = get_logger(__name__)
 
 _DANGEROUS: dict[str, tuple[str, str, str, str]] = {
     "gets": ("STACK_OVERFLOW", "HIGH", "gets() sans limite de taille", "CWE-121"),
+    "fgets": (
+        "STACK_OVERFLOW",
+        "MEDIUM",
+        "fgets() avec taille potentiellement superieure au buffer destination",
+        "CWE-121",
+    ),
     "strcpy": (
         "STACK_OVERFLOW",
         "HIGH",

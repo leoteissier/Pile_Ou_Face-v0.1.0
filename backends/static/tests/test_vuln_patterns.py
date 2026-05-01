@@ -35,11 +35,20 @@ class TestVulnPatterns(unittest.TestCase):
     def test_dangerous_dict_nonempty(self):
         self.assertGreater(len(_DANGEROUS), 0)
         self.assertIn("gets", _DANGEROUS)
+        self.assertIn("fgets", _DANGEROUS)
 
     def test_gets_detected(self):
         imports = [{"name": "gets"}, {"name": "puts"}]
         vulns = _check_dangerous_imports(imports)
         self.assertTrue(any(v["type"] == "STACK_OVERFLOW" for v in vulns))
+
+    def test_fgets_detected_with_glibc_version(self):
+        imports = [{"name": "fgets@GLIBC_2.0"}]
+        vulns = _check_dangerous_imports(imports)
+
+        self.assertTrue(any(v["function"] == "fgets@GLIBC_2.0" for v in vulns))
+        self.assertTrue(any(v["type"] == "STACK_OVERFLOW" for v in vulns))
+        self.assertTrue(any(v["severity"] == "MEDIUM" for v in vulns))
 
     def test_system_detected_as_injection(self):
         imports = [{"name": "system"}]
@@ -90,9 +99,12 @@ class TestVulnPatterns(unittest.TestCase):
             os.unlink(path)
 
     def test_dangerous_string_fallback_detects_raw_blob_symbols(self):
-        vulns = _check_dangerous_strings(b"\x00helper\x00_strcpy\x00safe\x00")
+        vulns = _check_dangerous_strings(
+            b"\x00helper\x00_strcpy\x00fgets@GLIBC_2.0\x00safe\x00"
+        )
 
         self.assertTrue(any(v["function"] == "_strcpy" for v in vulns))
+        self.assertTrue(any(v["function"] == "fgets@GLIBC_2.0" for v in vulns))
         self.assertTrue(all(v.get("source") == "string-reference" for v in vulns))
 
     def test_find_vulnerabilities_raw_blob_uses_string_fallback(self):

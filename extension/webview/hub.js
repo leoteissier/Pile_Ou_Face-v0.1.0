@@ -291,6 +291,7 @@ let dynamicTraceInitState = {
   archBits: 64,
   pie: false,
   sourcePath: '',
+  sourcePathTouched: false,
   sourceEnrichmentEnabled: false,
   sourceEnrichmentStatus: '',
   sourceEnrichmentMessage: '',
@@ -1726,10 +1727,12 @@ function buildDynamicPayloadTargetHint() {
 }
 
 function requestRunTraceInit(preset = null, forcedBinaryPath = '') {
+  const currentSourcePath = dynamicSourcePathInput?.value?.trim() || '';
   vscode.postMessage({
     type: 'requestRunTraceInit',
     binaryPath: forcedBinaryPath || binaryPathInput?.value?.trim() || '',
-    sourcePath: dynamicSourcePathInput?.value?.trim() || dynamicTraceInitState.sourcePath || '',
+    sourcePath: currentSourcePath || dynamicTraceInitState.sourcePath || '',
+    sourcePathExplicitlyCleared: dynamicTraceInitState.sourcePathTouched === true && !currentSourcePath,
     payloadTargetMode: getDynamicPayloadTargetMode(),
     preset
   });
@@ -1918,6 +1921,7 @@ function applyRunTraceInit(msg) {
     archBits: Number(msg.archBits) === 32 ? 32 : 64,
     pie: msg.pie === true,
     sourcePath: String(msg.sourcePath || '').trim(),
+    sourcePathTouched: dynamicTraceInitState.sourcePathTouched === true && !String(msg.sourcePath || '').trim(),
     sourceEnrichmentEnabled: msg.sourceEnrichmentEnabled === true,
     sourceEnrichmentStatus: String(msg.sourceEnrichmentStatus || '').trim(),
     sourceEnrichmentMessage: String(msg.sourceEnrichmentMessage || '').trim(),
@@ -2561,6 +2565,7 @@ btnClearDynamicTraceHistory?.addEventListener('click', () => {
 
 dynamicSourcePathInput?.addEventListener('input', () => {
   dynamicTraceInitState.sourcePath = dynamicSourcePathInput.value.trim();
+  dynamicTraceInitState.sourcePathTouched = true;
   if (!dynamicTraceInitState.sourcePath) {
     dynamicTraceInitState.sourceEnrichmentEnabled = false;
     dynamicTraceInitState.sourceEnrichmentStatus = '';
@@ -10754,6 +10759,7 @@ window.addEventListener('message', (event) => {
       input.value = msg.path;
       if (msg.target === 'dynamicSourcePath') {
         dynamicTraceInitState.sourcePath = String(msg.path || '').trim();
+        dynamicTraceInitState.sourcePathTouched = false;
         dynamicTraceInitState.sourceEnrichmentEnabled = false;
         dynamicTraceInitState.sourceEnrichmentStatus = 'pending';
         dynamicTraceInitState.sourceEnrichmentMessage = '';
