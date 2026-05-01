@@ -9,7 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 const cp = require('child_process');
 const { getHubContent } = require('../shared/webview');
-const { buildRuntimeEnv } = require('../shared/utils');
+const { buildRuntimeEnv, resolveProjectRoot } = require('../shared/utils');
 const {
   isSupportedBinary,
   inspectBinaryInput,
@@ -125,7 +125,7 @@ function createHub(config) {
       vscode.window.showErrorMessage('Aucun workspace ouvert.');
       return null;
     }
-    const root = folders[0].uri.fsPath;
+    const root = resolveProjectRoot(folders[0].uri.fsPath);
     const pythonExe = detectPythonExecutable(root);
     const pythonEnv = buildRuntimeEnv(root);
 
@@ -2016,6 +2016,7 @@ function createHub(config) {
             absPath,
             cacheKey: 'symbols',
             logLabel: 'Symboles',
+            isCacheUsable: (cached) => Array.isArray(cached) && cached.length > 0,
             compute: () => loadBinarySymbols(absPath),
           });
           hubPost('hubSymbols', { symbols });

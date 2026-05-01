@@ -23,7 +23,10 @@ from typing import Any, Iterable, Optional
 try:
     from backends.static.binary.symbols import extract_symbols
 except Exception:  # pragma: no cover - optional dependency at runtime
-    extract_symbols = None
+    try:
+        from backends.static.symbols import extract_symbols
+    except Exception:
+        extract_symbols = None
 
 
 ALPHABET = b"abcdefghijklmnopqrstuvwxyz"

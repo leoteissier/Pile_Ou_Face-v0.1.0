@@ -6,7 +6,7 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
-const { getTempDir } = require('./utils');
+const { getTempDir, resolveProjectRoot } = require('./utils');
 
 function parseNumericStep(value, fallback = null) {
   const num = Number(value);
@@ -350,7 +350,7 @@ function resolveOutputJsonPath() {
     vscode.window.showErrorMessage('Aucun workspace ouvert.');
     return null;
   }
-  const root = folders[0].uri.fsPath;
+  const root = resolveProjectRoot(folders[0].uri.fsPath);
   const tempOutput = path.join(getTempDir(root), 'output.json');
   if (fs.existsSync(tempOutput)) return tempOutput;
   let current = root;

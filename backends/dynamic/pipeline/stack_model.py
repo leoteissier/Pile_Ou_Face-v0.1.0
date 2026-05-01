@@ -16,17 +16,26 @@ from typing import Any, Optional
 try:
     from backends.static.binary.symbols import extract_symbols
 except Exception:  # pragma: no cover - optional dependency path
-    extract_symbols = None
+    try:
+        from backends.static.symbols import extract_symbols
+    except Exception:
+        extract_symbols = None
 
 try:
     from backends.static.disasm.stack_frame import analyse_stack_frame
 except Exception:  # pragma: no cover - optional dependency path
-    analyse_stack_frame = None
+    try:
+        from backends.static.stack_frame import analyse_stack_frame
+    except Exception:
+        analyse_stack_frame = None
 
 try:
     from backends.static.disasm.calling_convention import analyze_calling_conventions
 except Exception:  # pragma: no cover - optional dependency path
-    analyze_calling_conventions = None
+    try:
+        from backends.static.calling_convention import analyze_calling_conventions
+    except Exception:
+        analyze_calling_conventions = None
 
 
 HEX_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]+$")

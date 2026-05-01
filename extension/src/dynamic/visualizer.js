@@ -7,6 +7,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const { getWebviewContent } = require('../shared/webview');
+const { resolveProjectRoot } = require('../shared/utils');
 const { buildFunctionModel, buildMcpPayload, chooseFocusFunction } = require('./pedagogy');
 
 /**
@@ -111,7 +112,7 @@ function createVisualizer(config) {
           const tr = currentTraceRef || trace;
           const allowedPath = tr?.meta?.disasm_path ? String(tr.meta.disasm_path) : '';
           const folders = vscode.workspace.workspaceFolders;
-          const root = folders && folders.length ? folders[0].uri.fsPath : '';
+          const root = folders && folders.length ? resolveProjectRoot(folders[0].uri.fsPath) : '';
           const toAbsolute = (p) => (path.isAbsolute(p) ? p : path.join(root, p));
 
           let content = '';
@@ -187,7 +188,7 @@ function createVisualizer(config) {
           let targetFile = message.file;
           logChannel.appendLine(`[goToLine] line=${line} file=${targetFile ?? ''}`);
           const folders = vscode.workspace.workspaceFolders;
-          const root = folders && folders.length ? folders[0].uri.fsPath : '';
+          const root = folders && folders.length ? resolveProjectRoot(folders[0].uri.fsPath) : '';
 
           let docUri = null;
           const tr = currentTraceRef || trace;

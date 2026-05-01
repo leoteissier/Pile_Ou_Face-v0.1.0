@@ -12,8 +12,27 @@ const logChannel = vscode.window.createOutputChannel('Pile ou Face');
 
 const TEMP_DIR_NAME = '.pile-ou-face';
 
+function resolveProjectRoot(workspaceRoot) {
+  const start = path.resolve(String(workspaceRoot || ''));
+  if (!start) return workspaceRoot || '';
+  const candidates = [
+    start,
+    path.dirname(start),
+  ];
+  for (const candidate of candidates) {
+    if (
+      candidate
+      && fs.existsSync(path.join(candidate, 'backends'))
+      && fs.existsSync(path.join(candidate, 'extension'))
+    ) {
+      return candidate;
+    }
+  }
+  return start;
+}
+
 function getTempDir(root) {
-  return path.resolve(root, TEMP_DIR_NAME);
+  return path.resolve(resolveProjectRoot(root), TEMP_DIR_NAME);
 }
 
 function ensureTempDir(root) {
@@ -26,15 +45,16 @@ function ensureTempDir(root) {
 }
 
 async function ensurePythonDependencies(pythonExe, root) {
-  const requirementsPath = fs.existsSync(path.join(root, 'requirements.txt'))
-    ? path.join(root, 'requirements.txt')
-    : path.join(root, 'backends', 'requirements.txt');
+  const projectRoot = resolveProjectRoot(root);
+  const requirementsPath = fs.existsSync(path.join(projectRoot, 'requirements.txt'))
+    ? path.join(projectRoot, 'requirements.txt')
+    : path.join(projectRoot, 'backends', 'requirements.txt');
   if (!fs.existsSync(requirementsPath)) {
     logChannel.appendLine('[pip] requirements.txt introuvable.');
     return;
   }
   if (pythonExe === 'python3' || pythonExe === 'python') {
-    const venvPath = path.join(root, 'backends', '.venv');
+    const venvPath = path.join(projectRoot, 'backends', '.venv');
     if (!fs.existsSync(venvPath)) {
       logChannel.appendLine('[venv] Création du venv…');
       try {
@@ -95,10 +115,11 @@ async function ensurePythonDependencies(pythonExe, root) {
 
 function detectPythonExecutable(root, settingsPythonPath) {
   if (settingsPythonPath) return settingsPythonPath;
+  const projectRoot = resolveProjectRoot(root);
   const venvPaths = [
-    path.join(root, 'backends', '.venv', 'bin', 'python3'),
-    path.join(root, 'backends', '.venv', 'Scripts', 'python.exe'),
-    path.join(root, 'backends', '.venv', 'Scripts', 'python')
+    path.join(projectRoot, 'backends', '.venv', 'bin', 'python3'),
+    path.join(projectRoot, 'backends', '.venv', 'Scripts', 'python.exe'),
+    path.join(projectRoot, 'backends', '.venv', 'Scripts', 'python')
   ];
   for (const p of venvPaths) {
     if (fs.existsSync(p)) return p;
@@ -131,7 +152,8 @@ function resolveDockerExecutable() {
 
 function buildRuntimeEnv(root, extraEnv = {}) {
   const env = { ...process.env, ...extraEnv };
-  if (root) env.PYTHONPATH = extraEnv.PYTHONPATH || root;
+  const projectRoot = resolveProjectRoot(root);
+  if (projectRoot) env.PYTHONPATH = extraEnv.PYTHONPATH || projectRoot;
   const dockerExe = resolveDockerExecutable();
   if (dockerExe && dockerExe.includes(path.sep)) {
     const dockerDir = path.dirname(dockerExe);
@@ -199,6 +221,7 @@ function escapeHtml(s) {
 module.exports = {
   logChannel,
   TEMP_DIR_NAME,
+  resolveProjectRoot,
   getTempDir,
   ensureTempDir,
   ensurePythonDependencies,

@@ -13,6 +13,7 @@ const { createVisualizer } = require('./dynamic/visualizer');
 const { createHub } = require('./static/hub');
 const {
   logChannel,
+  resolveProjectRoot,
   getTempDir,
   ensureTempDir,
   runCommand,
@@ -39,7 +40,7 @@ function activate(context) {
   // Ensure Python dependencies are installed at startup
   const folders = vscode.workspace.workspaceFolders;
   if (folders && folders.length > 0) {
-    const root = folders[0].uri.fsPath;
+    const root = resolveProjectRoot(folders[0].uri.fsPath);
     const pythonExe = detectPythonExecutable(root);
     ensurePythonDependencies(pythonExe, root).catch((err) => {
       logChannel.appendLine(`[Python setup] Warning: ${err.message}`);
@@ -72,7 +73,8 @@ function activate(context) {
   context.subscriptions.push(...sharedSubs);
 
   // Panneau latéral et refresh
-  const root = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || '';
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || '';
+  const root = workspaceRoot ? resolveProjectRoot(workspaceRoot) : '';
   const savedSettings = context.globalState.get('pof-settings', {});
   const pythonExe = savedSettings.pythonPath || (root ? detectPythonExecutable(root) : 'python3');
   const symbolsProvider = new SidebarSymbolsProvider(root, pythonExe);

@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
 const { getDisasmScript, getXrefsScript } = require('../shared/paths');
+const { resolveProjectRoot } = require('../shared/utils');
 
 /**
  * @brief Enregistre les commandes statiques et retourne les subscriptions.
@@ -87,7 +88,7 @@ function registerStaticCommands(context, deps, providers) {
     }
     const folders = vscode.workspace.workspaceFolders;
     if (!folders?.length) return;
-    const r = folders[0].uri.fsPath;
+    const r = resolveProjectRoot(folders[0].uri.fsPath);
     const docPath = doc.uri.fsPath;
     const baseName = path.basename(docPath, '.asm').replace(/\.disasm/, '');
     const mappingPath = path.join(path.dirname(docPath), `${baseName}.disasm.mapping.json`);
@@ -145,7 +146,7 @@ function registerStaticCommands(context, deps, providers) {
     const addr = addrMatch[1].startsWith('0x') ? addrMatch[1] : `0x${addrMatch[1]}`;
     const folders = vscode.workspace.workspaceFolders;
     if (!folders?.length) return;
-    const r = folders[0].uri.fsPath;
+    const r = resolveProjectRoot(folders[0].uri.fsPath);
     const docPath = doc.uri.fsPath;
     const baseName = path.basename(docPath, '.asm').replace(/\.disasm/, '');
     const mappingPath = path.join(path.dirname(docPath), `${baseName}.disasm.mapping.json`);

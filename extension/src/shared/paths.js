@@ -6,19 +6,40 @@
  */
 
 const path = require('path');
+const fs = require('fs');
+
+function resolveProjectRoot(root) {
+  const start = path.resolve(String(root || ''));
+  const candidates = [start, path.dirname(start)];
+  for (const candidate of candidates) {
+    if (
+      candidate
+      && fs.existsSync(path.join(candidate, 'backends'))
+      && fs.existsSync(path.join(candidate, 'extension'))
+    ) {
+      return candidate;
+    }
+  }
+  return start;
+}
 
 /**
  * @brief Retourne le chemin absolu vers un script Python dans backends/static/.
  */
 function backendStatic(root, script) {
-  return path.join(root, 'backends', 'static', script);
+  const projectRoot = resolveProjectRoot(root);
+  const preferred = path.join(projectRoot, 'backends', 'static', script);
+  if (fs.existsSync(preferred)) return preferred;
+  const flat = path.join(projectRoot, 'backends', 'static', path.basename(script));
+  if (fs.existsSync(flat)) return flat;
+  return preferred;
 }
 
 /**
  * @brief Retourne le chemin absolu vers un script Python dans backends/dynamic/.
  */
 function backendDynamic(root, ...segments) {
-  return path.join(root, 'backends', 'dynamic', ...segments);
+  return path.join(resolveProjectRoot(root), 'backends', 'dynamic', ...segments);
 }
 
 /** backends/static/disasm/disasm.py — Désassemblage */

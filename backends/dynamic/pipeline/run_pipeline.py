@@ -24,12 +24,19 @@ if ROOT not in sys.path:
 from backends.dynamic.core.interfaces import ExecutionEngine, TraceConfigLike
 from backends.dynamic.pipeline.diagnostics import _is_win_addr, build_diagnostics
 from backends.dynamic.pipeline.stack_model import _hex, build_dynamic_analysis
-from backends.static.disasm.disasm import disassemble_with_capstone
+
+try:
+    from backends.static.disasm.disasm import disassemble_with_capstone
+except Exception:  # pragma: no cover - compatibility with flat v0.1.0 layout
+    from backends.static.disasm import disassemble_with_capstone
 
 try:
     from backends.static.binary.symbols import extract_symbols
 except Exception:
-    extract_symbols = None
+    try:
+        from backends.static.symbols import extract_symbols
+    except Exception:
+        extract_symbols = None
 
 
 def _default_engine() -> ExecutionEngine:
