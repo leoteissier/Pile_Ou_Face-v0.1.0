@@ -37,8 +37,6 @@ Ajouter le `.c` permet :
 - d’améliorer la reconstruction de la pile
 - d’avoir une analyse plus précise
 
-[Screenshot 1 — sélection du binaire]
-
 ---
 
 ## 2. Payload d’entrée
@@ -71,8 +69,6 @@ b"A"*64
 - aide à générer des payloads
 - utile pour les offsets, padding, structures
 
-[Screenshot 2 — payload builder]
-
 ---
 
 ## 3. Aperçu du payload
@@ -90,8 +86,6 @@ Fonctionnalités :
 
 Cela permet de vérifier que le payload correspond exactement à ce qui sera envoyé.
 
-[Screenshot 3 — preview et historique]
-
 ---
 
 ## 4. Exécution (Run Trace)
@@ -108,8 +102,6 @@ Important :
 - seul le payload change
 
 Chaque exécution produit une nouvelle trace.
-
-[Screenshot 4 — bouton Run Trace]
 
 ---
 
@@ -134,8 +126,6 @@ Ce n’est pas un dump brut, mais une reconstruction basée sur :
 
 Objectif : rendre la pile compréhensible.
 
-[Screenshot 5 — stack]
-
 ---
 
 ### 5.2 Registres
@@ -148,8 +138,6 @@ Les registres principaux sont affichés :
 
 Les valeurs correspondent à l’état au moment critique.
 
-[Screenshot 6 — registres]
-
 ---
 
 ### 5.3 Vue assembleur
@@ -161,8 +149,6 @@ Affichage des instructions exécutées :
 - instructions critiques mises en avant (strcpy, ret, etc.)
 
 Permet de comprendre l’impact du payload sur le programme.
-
-[Screenshot 7 — asm]
 
 ---
 
@@ -188,8 +174,6 @@ Le système analyse automatiquement le résultat.
 
 Important :
 Un détournement réussi n’est pas un échec, mais une exploitation.
-
-[Screenshot 8 — diagnostics]
 
 ---
 
